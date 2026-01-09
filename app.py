@@ -703,14 +703,33 @@ if uploaded_csv is not None:
     
     with r1c1:
         st.subheader("Hierarchy Drill-Down")
-        # ... [Logic Omitted for brevity] ...
+        if not df.empty:
+            sb_df = df.copy()
+            sb_val = 'Total Count'
+            sb_title = "Sighting Distribution"
+            
+            # Dynamic Context for Sunburst
+            if st.session_state.map_filter == 'Conflict': 
+                sb_df = sb_df[(sb_df['Crop Damage']>0)|(sb_df['House Damage']>0)|(sb_df['Injury']>0)]
+                sb_df['Incidents'] = 1; sb_val = 'Incidents'
+                sb_title = "Conflict Hierarchy"
+            elif st.session_state.map_filter == 'Direct': 
+                sb_df = sb_df[sb_df['Sighting Type'] == 'Direct']
+                sb_title = "Direct Sightings"
+            elif st.session_state.map_filter == 'Males': 
+                sb_df = sb_df[sb_df['Male Count'] > 0]
+                sb_val = 'Male Count'
+                sb_title = "Male Population"
+                
             if not sb_df.empty:
                 fig_sun = px.sunburst(sb_df, path=['Division', 'Range', 'Beat'], values=sb_val, title=sb_title)
-                # UPDATED
+                # UPDATED: Replaced use_container_width with width="stretch"
                 st.plotly_chart(fig_sun, width="stretch")
             else:
                 fig_sun = None
                 st.info("No data available for this view.")
+        else:
+            st.info("No data available.")
 
     with r1c2:
         st.subheader("Hourly Activity (0-24h)")
@@ -718,7 +737,7 @@ if uploaded_csv is not None:
             h_counts = df['Hour'].value_counts().reindex(range(24), fill_value=0).reset_index()
             fig_hourly = px.bar(h_counts, x='Hour', y='count', title="Activity Peaks", 
                                 color='count', color_continuous_scale='Viridis')
-            # UPDATED
+            # UPDATED: Replaced use_container_width with width="stretch"
             st.plotly_chart(fig_hourly, width="stretch")
         else: fig_hourly = None
 
@@ -727,28 +746,29 @@ if uploaded_csv is not None:
         st.subheader("Trend Analysis")
         daily = df.groupby('Date').size().reset_index(name='Count')
         fig_trend = px.line(daily, x='Date', y='Count', markers=True)
-        # UPDATED
+        # UPDATED: Replaced use_container_width with width="stretch"
         st.plotly_chart(fig_trend, width="stretch")
     with c2:
         st.subheader("Demographics")
         demog = df[['Male Count', 'Female Count', 'Calf Count']].sum().reset_index()
         demog.columns = ['Type', 'Count']
         fig_demog = px.pie(demog, values='Count', names='Type', hole=0.4)
-        # UPDATED
+        # UPDATED: Replaced use_container_width with width="stretch"
         st.plotly_chart(fig_demog, width="stretch")
 
     # Conflict Breakdown
     c4 = st.columns(1)[0]
     with c4:
         st.subheader("Conflict Type Breakdown")
-        # ... [Logic Omitted] ...
+        damage_sums = df[['Crop Damage', 'House Damage', 'Injury']].apply(lambda x: (x > 0).sum()).reset_index()
+        damage_sums.columns = ['Damage Type', 'Incidents']
+        damage_sums = damage_sums[damage_sums['Incidents'] > 0]
         if not damage_sums.empty:
             fig_damage = px.pie(damage_sums, values='Incidents', names='Damage Type', 
                                 color='Damage Type', 
                                 color_discrete_map={'Crop Damage':'orange', 'House Damage':'red', 'Injury':'darkred'})
-            # UPDATED
+            # UPDATED: Replaced use_container_width with width="stretch"
             st.plotly_chart(fig_damage, width="stretch")
-
         else:
             fig_damage = None
             st.info("No conflicts reported.")
@@ -794,6 +814,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

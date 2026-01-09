@@ -72,11 +72,9 @@ def haversine_np(lon1, lat1, lon2, lat2):
     km = 6367 * c
     return km
 
-def identify_risk_villages(sightings_df, villages_df):
+def identify_risk_villages(sightings_df, villages_df, damage_rad_km, presence_rad_km, cons_days):
     """
-    Identifies affected villages based on:
-    1. PRESENCE: Sighting within 5km for the last 3 consecutive days (relative to max date).
-    2. DAMAGE: Crop/House damage within 2km (any time in current selection).
+    Identifies affected villages based on user-defined parameters.
     """
     if villages_df is None or sightings_df.empty:
         return []
@@ -90,68 +88,61 @@ def identify_risk_villages(sightings_df, villages_df):
     s_lats = sightings_df['Latitude'].values
     
     # Calculate Full Distance Matrix (Villages x Sightings)
-    # Shape: (Num_Villages, Num_Sightings)
-    # broadcasting: v (N,1) vs s (1,M) -> (N,M)
     dists = haversine_np(v_lons[:, np.newaxis], v_lats[:, np.newaxis], s_lons[np.newaxis, :], s_lats[np.newaxis, :])
     
     affected_list = []
     
-    # --- CRITERIA 1: DAMAGE (< 2km) ---
-    # Find sightings with damage
+    # --- CRITERIA 1: DAMAGE (User-defined Radius) ---
     damage_mask = (sightings_df['Crop Damage'] > 0) | (sightings_df['House Damage'] > 0)
     if damage_mask.any():
-        # Get indices of damage sightings
         dmg_indices = np.where(damage_mask)[0]
-        # Check distances for these specific sightings
-        # dists[:, dmg_indices] gives distances from all villages to damage sightings
-        # np.min(..., axis=1) finds the closest damage event for each village
         min_dmg_dists = np.min(dists[:, dmg_indices], axis=1)
         
-        # Identify villages < 2km from ANY damage
-        dmg_v_indices = np.where(min_dmg_dists <= 2.0)[0]
+        # Use slider value
+        dmg_v_indices = np.where(min_dmg_dists <= damage_rad_km)[0]
         for idx in dmg_v_indices:
             affected_list.append({
                 'Village': v_names[idx],
                 'Lat': v_lats[idx],
                 'Lon': v_lons[idx],
-                'Reason': 'Damage Reported (<2km)',
-                'Color': 'red'
+                'Reason': f'Damage Reported (<{damage_rad_km}km)',
+                'Color': 'red',
+                'Radius': damage_rad_km * 1000  # Convert to meters for Map
             })
 
-    # --- CRITERIA 2: 3-DAY PRESENCE (< 5km) ---
+    # --- CRITERIA 2: PRESENCE (User-defined Radius & Days) ---
     max_date = sightings_df['Date'].max()
-    date_3 = max_date
-    date_2 = max_date - timedelta(days=1)
-    date_1 = max_date - timedelta(days=2)
     
-    # Get indices for each of the last 3 days
-    # We need to know which columns in 'dists' correspond to which dates
+    # Check consecutive days based on slider input
+    # If slider is 3, we check: max_date, max_date-1, max_date-2
     dates = sightings_df['Date'].values
+    has_streak_per_village = np.ones(len(villages_df), dtype=bool) # Start True
     
-    idx_d3 = np.where(dates == np.datetime64(date_3))[0]
-    idx_d2 = np.where(dates == np.datetime64(date_2))[0]
-    idx_d1 = np.where(dates == np.datetime64(date_1))[0]
-    
-    if len(idx_d3) > 0 and len(idx_d2) > 0 and len(idx_d1) > 0:
-        # Check if village is < 5km from AT LEAST ONE sighting on EACH day
-        # min(dists) <= 5.0 for that day's subset
-        has_d3 = np.any(dists[:, idx_d3] <= 5.0, axis=1)
-        has_d2 = np.any(dists[:, idx_d2] <= 5.0, axis=1)
-        has_d1 = np.any(dists[:, idx_d1] <= 5.0, axis=1)
+    for i in range(cons_days):
+        check_date = max_date - timedelta(days=i)
+        idx_date = np.where(dates == np.datetime64(check_date))[0]
         
-        # Combine: Must be True for ALL 3 days
-        persistent_mask = has_d3 & has_d2 & has_d1
+        if len(idx_date) == 0:
+            has_streak_per_village[:] = False # No data for this day, streak impossible
+            break
+            
+        # Check if village is within Presence Radius for this day
+        # min(dists) <= presence_rad_km
+        daily_presence = np.any(dists[:, idx_date] <= presence_rad_km, axis=1)
+        has_streak_per_village &= daily_presence
         
-        for idx in np.where(persistent_mask)[0]:
-            # Avoid duplicates if already caught by Damage
-            if not any(d['Village'] == v_names[idx] for d in affected_list):
-                affected_list.append({
-                    'Village': v_names[idx],
-                    'Lat': v_lats[idx],
-                    'Lon': v_lons[idx],
-                    'Reason': '3-Day Presence (<5km)',
-                    'Color': 'orange'
-                })
+    # Add villages that maintained the streak
+    for idx in np.where(has_streak_per_village)[0]:
+        # Avoid duplicates if already caught by Damage
+        if not any(d['Village'] == v_names[idx] for d in affected_list):
+            affected_list.append({
+                'Village': v_names[idx],
+                'Lat': v_lats[idx],
+                'Lon': v_lons[idx],
+                'Reason': f'{cons_days}-Day Presence (<{presence_rad_km}km)',
+                'Color': 'orange',
+                'Radius': presence_rad_km * 1000 # Convert to meters for Map
+            })
                 
     return affected_list
 
@@ -401,6 +392,10 @@ def generate_full_html_report(df, map_object, fig_trend, fig_demog, fig_hourly, 
 # 5. SIDEBAR & SESSION STATE
 # ==========================================
 
+# ==========================================
+# 5. SIDEBAR & SESSION STATE
+# ==========================================
+
 # Initialize Session State Variables
 if 'map_filter' not in st.session_state:
     st.session_state.map_filter = 'All'
@@ -414,6 +409,15 @@ with st.sidebar:
     c2.markdown(f'<img src="{LOGO_MP}" width="80%">', unsafe_allow_html=True)
     st.markdown("---")
     st.info("© **Wildlife Conservation Trust, Mumbai**\n\nDeveloped for MP Forest Department Elephant Monitoring.")
+
+    # --- NEW: RISK PARAMETERS SLIDERS ---
+    # These variables will be used later in the map section
+    st.divider()
+    st.subheader("🏘️ Risk Parameters")
+    with st.expander("Configure Logic", expanded=True):
+        p_dmg_rad = st.slider("Damage Radius (km)", 0.5, 5.0, 2.0, 0.5, key="slider_dmg", help="Alert village if damage occurs within this distance.")
+        p_pres_rad = st.slider("Presence Radius (km)", 1.0, 10.0, 5.0, 0.5, key="slider_pres", help="Alert village if elephant present within this distance.")
+        p_days = st.slider("Consecutive Days", 1, 7, 3, key="slider_days", help="Number of consecutive days required for presence alert.")
 
 # Main Title
 st.title("🐘 Elephant Sighting & Conflict Command Centre")
@@ -668,16 +672,16 @@ if uploaded_csv is not None:
                     tooltip=tooltip
                 ).add_to(m)
 
-        # 3. Affected Villages (RINGS)
-        # Calculate using the NEW advanced logic
+       # 3. Affected Villages (RINGS)
         if village_df is not None:
-            risk_villages = identify_risk_villages(map_df, village_df)
+            # Pass slider values to the function
+            risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
             
             for v in risk_villages:
-                # Draw 2km Buffer Ring
+                # Draw Dynamic Buffer Ring (Size based on logic used)
                 folium.Circle(
                     location=[v['Lat'], v['Lon']],
-                    radius=2000,   # 2km fixed buffer
+                    radius=v['Radius'],   # Uses the radius from the slider (meters)
                     color=v['Color'],
                     weight=2,
                     fill=True,
@@ -691,29 +695,6 @@ if uploaded_csv is not None:
                     icon=folium.Icon(color="gray", icon="home", prefix="fa"),
                     tooltip=f"<b>{v['Village']}</b>"
                 ).add_to(m)
-
-        st_folium(m, width="100%", height=500, returned_objects=[])
-    with c_legend:
-        st.subheader("🏠 Affected Villages")
-        
-        # Check if 'Affected Villages' column exists
-        if 'Affected Villages' in df.columns:
-            # Filter affected villages based on CURRENT map view
-            affected_df = map_df[map_df['Near Village'] == True]
-            
-            if not affected_df.empty:
-                # Split comma-separated strings to count individual villages
-                # The .explode() function separates "Village A, Village B" into two rows
-                all_villages = affected_df['Affected Villages'].str.split(', ').explode()
-                
-                # Count and display
-                v_counts = all_villages.value_counts().head(10).reset_index()
-                v_counts.columns = ['Village', 'Incidents']
-                st.dataframe(v_counts, use_container_width=True, hide_index=True)
-            else:
-                st.write("No villages found within 2km of sightings in current view.")
-        else:
-            st.info("Upload 'centroids.csv' to see village data.")
     # --- G. ANALYTICS CHARTS ---
     st.divider()
     r1c1, r1c2 = st.columns(2)
@@ -821,6 +802,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

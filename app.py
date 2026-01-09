@@ -589,13 +589,19 @@ if uploaded_csv is not None:
         st_folium(m, width="100%", height=500, returned_objects=[])
 
     with c_legend:
-       st.subheader("🏠 Affected Villages")
+        st.subheader("🏠 Affected Villages")
+        
         # Check if 'Affected Villages' column exists
         if 'Affected Villages' in df.columns:
+            # Filter affected villages based on CURRENT map view
             affected_df = map_df[map_df['Near Village'] == True]
+            
             if not affected_df.empty:
                 # Split comma-separated strings to count individual villages
+                # The .explode() function separates "Village A, Village B" into two rows
                 all_villages = affected_df['Affected Villages'].str.split(', ').explode()
+                
+                # Count and display
                 v_counts = all_villages.value_counts().head(10).reset_index()
                 v_counts.columns = ['Village', 'Incidents']
                 st.dataframe(v_counts, use_container_width=True, hide_index=True)
@@ -603,7 +609,6 @@ if uploaded_csv is not None:
                 st.write("No villages found within 2km of sightings in current view.")
         else:
             st.info("Upload 'centroids.csv' to see village data.")
-            
     # --- G. ANALYTICS CHARTS ---
     st.divider()
     r1c1, r1c2 = st.columns(2)
@@ -711,6 +716,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

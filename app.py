@@ -17,83 +17,62 @@ import numpy as np
 LOGO_WCT = "https://www.wildlifeconservationtrust.org/wp-content/uploads/2016/09/wct-logo.png"
 LOGO_MP = "https://upload.wikimedia.org/wikipedia/commons/2/23/Emblem_of_Madhya_Pradesh.svg"
 
-# --- 1. VILLAGE & GEOSPATIAL LOGIC ---
+# --- 1. UTILITY FUNCTIONS ---
 
 @st.cache_data
-def load_villages(file_path="centroids.csv"):
-    """Loads village centroid data."""
-    if not os.path.exists(file_path):
-        return pd.DataFrame()
-    try:
-        df = pd.read_csv(file_path)
-        # Ensure required columns exist
-        req_cols = ['Name', 'Latitude', 'Longitude']
-        if not all(col in df.columns for col in req_cols):
-            return pd.DataFrame()
-        return df
-    except:
-        return pd.DataFrame()
+def load_village_data(filepath="centroids.csv"):
+    """Loads village centroid data if available."""
+    if os.path.exists(filepath):
+        try:
+            v_df = pd.read_csv(filepath)
+            required_cols = {'Village', 'Latitude', 'Longitude'}
+            # Case-insensitive column check
+            v_df.columns = [c.strip() for c in v_df.columns]
+            # Normalize common variations
+            rename_map = {'Lat': 'Latitude', 'Lon': 'Longitude', 'Long': 'Longitude', 'Name': 'Village'}
+            v_df = v_df.rename(columns=rename_map)
+            
+            if required_cols.issubset(v_df.columns):
+                return v_df
+        except Exception:
+            return None
+    return None
 
-def calculate_risk_zones(sightings_df, villages_df, radius_km):
+def haversine_np(lon1, lat1, lon2, lat2):
     """
-    Identifies villages within radius_km of any sighting in sightings_df.
-    Optimized with bounding box filter for performance.
+    Calculate the great circle distance between two points
+    on the earth (specified in decimal degrees) using NumPy
     """
-    if sightings_df.empty or villages_df.empty:
-        return pd.DataFrame()
+    lon1, lat1, lon2, lat2 = map(np.radians, [lon1, lat1, lon2, lat2])
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = np.sin(dlat/2.0)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2.0)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    km = 6367 * c
+    return km
 
-    affected_list = []
-    
-    # Pre-calculate village coordinates
-    v_lats = villages_df['Latitude'].values
-    v_lons = villages_df['Longitude'].values
-    v_names = villages_df['Name'].values
-    
-    # 1 Degree Latitude ~= 111 km
-    deg_radius = radius_km / 100.0  # Approx buffer for bounding box (slightly larger is safe)
+def calculate_nearest_village(sightings_df, villages_df):
+    """Finds the nearest village and distance for each sighting."""
+    if villages_df is None or sightings_df.empty:
+        return sightings_df
 
-    for _, row in sightings_df.iterrows():
-        s_lat, s_lon = row['Latitude'], row['Longitude']
-        
-        # Bounding Box Filter (Fast)
-        mask = (
-            (v_lats >= s_lat - deg_radius) & (v_lats <= s_lat + deg_radius) &
-            (v_lons >= s_lon - deg_radius) & (v_lons <= s_lon + deg_radius)
+    # Cross join is too heavy for large datasets, using a simpler apply approach
+    # (For very large datasets, Scipy cKDTree is better, but keeping dependencies minimal here)
+    
+    def get_nearest(row):
+        dists = haversine_np(
+            villages_df['Longitude'].values, 
+            villages_df['Latitude'].values, 
+            row['Longitude'], 
+            row['Latitude']
         )
-        
-        if not np.any(mask):
-            continue
-            
-        # Precise Haversine Calculation for candidates
-        cand_lats = v_lats[mask]
-        cand_lons = v_lons[mask]
-        cand_names = v_names[mask]
-        
-        R = 6371  # Earth radius km
-        dlat = np.radians(cand_lats - s_lat)
-        dlon = np.radians(cand_lons - s_lon)
-        a = np.sin(dlat/2)**2 + np.cos(np.radians(s_lat)) * np.cos(np.radians(cand_lats)) * np.sin(dlon/2)**2
-        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
-        dists = R * c
-        
-        # Filter by exact radius
-        risk_mask = dists <= radius_km
-        
-        for name, dist in zip(cand_names[risk_mask], dists[risk_mask]):
-            affected_list.append({
-                'Village': name,
-                'Distance (km)': round(dist, 2),
-                'Sighting Date': row['Date'].strftime('%d-%b-%Y'),
-                'Sighting Beat': row['Beat'],
-                'Risk Source': 'Conflict' if radius_km == 2 else 'Presence'
-            })
-            
-    if not affected_list:
-        return pd.DataFrame()
-        
-    return pd.DataFrame(affected_list).drop_duplicates(subset=['Village', 'Sighting Date'])
+        min_idx = np.argmin(dists)
+        return pd.Series([villages_df.iloc[min_idx]['Village'], dists[min_idx]])
 
-# --- 2. OPTIMIZED KML TO GEOJSON PARSER ---
+    sightings_df[['Nearest Village', 'Distance to Village (km)']] = sightings_df.apply(get_nearest, axis=1)
+    return sightings_df
+
+# --- 2. KML PARSER ---
 
 def parse_kml_coordinates(placemark, ns):
     """Extracts coordinates for GeoJSON (Lon, Lat)."""
@@ -115,7 +94,6 @@ def parse_kml_coordinates(placemark, ns):
     return polygons
 
 def extract_name_from_html(html_content):
-    """Extracts Range/Beat name from HTML description."""
     try:
         clean_html = html_content.replace('\n', ' ').replace('\r', '')
         patterns = [
@@ -141,37 +119,32 @@ def extract_name_from_html(html_content):
     return None
 
 def get_feature_name(placemark, ns):
-    """Determines the Name for the GeoJSON property."""
     desc = placemark.find('kml:description', ns)
     if desc is not None and desc.text:
         name = extract_name_from_html(desc.text)
         if name: return name
-
     ext = placemark.find('kml:ExtendedData', ns)
     if ext is not None:
         for sd in ext.findall('.//kml:SimpleData', ns):
             if sd.get('name', '').lower() in ['range_nm', 'beat_nm', 'name_1', 'range', 'beat']:
                 return sd.text
-
     name_tag = placemark.find('kml:name', ns)
     if name_tag is not None and name_tag.text:
         val = name_tag.text.strip()
         if val.upper() not in ["BTR", "SATNA", "SINGRAULI", "UMARIA", "SOUTH SHAHDOL", "NORTH SHAHDOL", "0", "1", "NONE"]:
             return val
-            
     return "Unknown Area"
 
 @st.cache_data
 def load_map_data_as_geojson(folder_path="."):
-    """Loads all KML/KMZ files and converts them into a single GeoJSON FeatureCollection."""
     features = []
-    
+    all_beats = set()
     files = glob.glob(os.path.join(folder_path, "*.kmz")) + glob.glob(os.path.join(folder_path, "*.kml"))
     
     for file_path in files:
         try:
-            filename = os.path.basename(file_path)
             content = None
+            filename = os.path.basename(file_path)
             if file_path.endswith('.kmz'):
                 with zipfile.ZipFile(file_path, 'r') as z:
                     kml_inside = [f for f in z.namelist() if f.endswith('.kml')]
@@ -185,11 +158,10 @@ def load_map_data_as_geojson(folder_path="."):
             if content:
                 tree = ET.fromstring(content)
                 ns = {'kml': 'http://www.opengis.net/kml/2.2'}
-                
                 for placemark in tree.findall('.//kml:Placemark', ns):
                     name = get_feature_name(placemark, ns)
                     clean_name = name.title() if name else "Unknown"
-                    
+                    if clean_name != "Unknown": all_beats.add(clean_name)
                     polys = parse_kml_coordinates(placemark, ns)
                     for poly_coords in polys:
                         feature = {
@@ -198,16 +170,13 @@ def load_map_data_as_geojson(folder_path="."):
                             "geometry": {"type": "Polygon", "coordinates": [poly_coords]}
                         }
                         features.append(feature)
-        except Exception as e:
-            st.error(f"Error loading {file_path}: {e}")
-
-    return features
+        except Exception:
+            pass # Silent fail for map load
+    return features, list(all_beats)
 
 # --- 3. REPORT GENERATOR ---
 
 def generate_full_html_report(df, map_object, fig_trend, fig_demog, fig_hourly, fig_damage, fig_sunburst, start_date, end_date):
-    """Generates a downloadable HTML file."""
-    
     total_sightings = len(df)
     cumulative_count = int(df['Total Count'].sum())
     conflicts = df[(df['Crop Damage']>0) | (df['House Damage']>0) | (df['Injury']>0)]
@@ -225,19 +194,13 @@ def generate_full_html_report(df, map_object, fig_trend, fig_demog, fig_hourly, 
     <br>
     """
     
+    # Method section
     methodology = """
     <div style="margin-top: 20px; border: 1px solid #ddd; padding: 15px; background-color: #fafafa;">
         <h5>ℹ️ Methodology & Definitions</h5>
         <ul>
-            <li><b>Conflict Severity Score:</b> Weighted Index. <i>Score = (Presence × 1) + (Crop × 2.5) + (House × 5) + (Human Injury × 20)</i>.</li>
-            <li><b>Risk Zones:</b>
-                <ul>
-                    <li><b>🚨 High Risk:</b> Villages within 2km of a conflict incident.</li>
-                    <li><b>⚠️ Alert Zone:</b> Villages within 5km of a non-conflict presence.</li>
-                </ul>
-            </li>
+            <li><b>Conflict Severity Score:</b> Weighted Index. <i>Score = (Presence × 1) + (Crop × 2.5) + (House × 5) + (Injury × 20)</i>.</li>
             <li><b>HEC Ratio:</b> Percentage of entries that resulted in conflict events.</li>
-            <li><b>Trend Indicators:</b> Comparison against the previous period of the same duration.</li>
         </ul>
     </div>
     <br>
@@ -266,8 +229,8 @@ def generate_full_html_report(df, map_object, fig_trend, fig_demog, fig_hourly, 
     <body>
         <div class="container">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-                <img src="{LOGO_MP}" width="80" alt="MP Forest">
-                <img src="{LOGO_WCT}" width="150" alt="WCT Mumbai">
+                <img src="{LOGO_MP}" width="80">
+                <img src="{LOGO_WCT}" width="150">
             </div>
             {narrative}
             {methodology}
@@ -301,24 +264,20 @@ with st.sidebar:
 
 st.title("🐘 Elephant Sighting & Conflict Command Centre")
 
-if 'map_filter' not in st.session_state:
-    st.session_state.map_filter = 'All'
-if 'map_style' not in st.session_state:
-    st.session_state.map_style = 'Pins'
+if 'map_filter' not in st.session_state: st.session_state.map_filter = 'All'
 
 # A. LOAD DATA
-geojson_features = load_map_data_as_geojson(".")
-villages_df = load_villages("centroids.csv")
+geojson_features, all_loaded_beats = load_map_data_as_geojson(".")
+village_df = load_village_data("centroids.csv") # Try loading village data
 
 if geojson_features:
     with st.expander(f"✅ Map Data Loaded ({len(geojson_features)} regions)"):
         st.write("System optimized for fast loading.")
-if not villages_df.empty:
-    with st.sidebar:
-        st.success(f"🏘️ {len(villages_df)} Villages Loaded")
+        
+if village_df is not None:
+    st.sidebar.success(f"✅ Village Data Loaded ({len(village_df)} villages)")
 else:
-    with st.sidebar:
-        st.warning("⚠️ 'centroids.csv' not found. Village analysis disabled.")
+    st.sidebar.warning("⚠️ 'centroids.csv' not found. Village analysis disabled.")
 
 # B. FILE UPLOADER
 uploaded_csv = st.file_uploader("Upload Sightings Report (CSV)", type=['csv'])
@@ -327,47 +286,40 @@ if uploaded_csv is not None:
     # 1. Load Raw Data
     df_raw = pd.read_csv(uploaded_csv)
     df_raw['Date'] = pd.to_datetime(df_raw['Date'], format='%d-%m-%Y', errors='coerce')
-    
-    try:
-        df_raw['Hour'] = pd.to_datetime(df_raw['Time'], format='%H:%M:%S', errors='coerce').dt.hour
-    except:
-        df_raw['Hour'] = 0 
-        
+    try: df_raw['Hour'] = pd.to_datetime(df_raw['Time'], format='%H:%M:%S', errors='coerce').dt.hour
+    except: df_raw['Hour'] = 0 
     df_raw = df_raw.dropna(subset=['Date'])
     
     cols = ['Total Count', 'Male Count', 'Female Count', 'Calf Count', 'Crop Damage', 'House Damage', 'Injury']
     for c in cols:
         if c in df_raw.columns: df_raw[c] = pd.to_numeric(df_raw[c], errors='coerce').fillna(0)
 
-    # Normalize Text
-    if 'Range' in df_raw.columns: df_raw['Range'] = df_raw['Range'].astype(str).str.title()
-    if 'Beat' in df_raw.columns: df_raw['Beat'] = df_raw['Beat'].astype(str).str.title()
-    if 'Division' in df_raw.columns: df_raw['Division'] = df_raw['Division'].astype(str).str.title()
+    if 'Range' in df_raw.columns: df_raw['Range'] = df_raw['Range'].astype(str).str.title().fillna('Unknown')
+    if 'Beat' in df_raw.columns: df_raw['Beat'] = df_raw['Beat'].astype(str).str.title().fillna('Unknown')
+    if 'Division' in df_raw.columns: df_raw['Division'] = df_raw['Division'].astype(str).str.title().fillna('Unknown')
 
-    df_raw['Division'] = df_raw['Division'].fillna('Unknown')
-    df_raw['Range'] = df_raw['Range'].fillna('Unknown')
-    df_raw['Beat'] = df_raw['Beat'].fillna('Unknown')
-
-    # Advanced Calculations
+    # 2. Advanced Calculations
     df_raw['Severity Score'] = (
-        1 + # Base score for presence
-        (df_raw['Crop Damage'] > 0).astype(int) * 2.5 +
-        (df_raw['House Damage'] > 0).astype(int) * 5 +
-        (df_raw['Injury'] > 0).astype(int) * 20
+        1 + (df_raw['Crop Damage']>0).astype(int)*2.5 + 
+        (df_raw['House Damage']>0).astype(int)*5 + 
+        (df_raw['Injury']>0).astype(int)*20
     )
     df_raw['DayOfWeek'] = df_raw['Date'].dt.day_name()
     df_raw['Is_Night'] = df_raw['Hour'].apply(lambda x: 1 if (x >= 18 or x <= 6) else 0)
+    
+    # Calculate Village Proximity if data exists
+    if village_df is not None:
+        df_raw = calculate_nearest_village(df_raw, village_df)
+        df_raw['Near Village'] = df_raw['Distance to Village (km)'] < 0.5 # 500m threshold
 
     # --- FILTERS ---
     with st.sidebar:
         st.header("Filters")
         min_date, max_date = df_raw['Date'].min(), df_raw['Date'].max()
         start, end = st.date_input("Date Range", [min_date, max_date], min_value=min_date, max_value=max_date)
-        
-        # Apply Date Filter
         df = df_raw[(df_raw['Date'].dt.date >= start) & (df_raw['Date'].dt.date <= end)]
         
-        # Calculate Previous Period Range for Trends
+        # Trend Calc
         delta_days = (end - start).days + 1
         prev_end = start - timedelta(days=1)
         prev_start = prev_end - timedelta(days=delta_days - 1)
@@ -377,7 +329,7 @@ if uploaded_csv is not None:
         sel_div = st.selectbox("Filter Division", divisions)
         if sel_div != 'All': 
             df = df[df['Division'] == sel_div]
-            df_prev = df_prev[df_prev['Division'] == sel_div] 
+            df_prev = df_prev[df_prev['Division'] == sel_div]
         
         ranges_in_data = sorted(list(df['Range'].unique()))
         ranges = ['All'] + ranges_in_data
@@ -385,9 +337,8 @@ if uploaded_csv is not None:
         if sel_range != 'All': 
             df = df[df['Range'] == sel_range]
             df_prev = df_prev[df_prev['Range'] == sel_range]
-        
+            
         st.divider()
-        st.header("Map Settings")
         map_mode = st.radio("Visualization Mode:", ["Pins", "Heatmap"], horizontal=True)
 
     # --- KPI METRICS ---
@@ -407,49 +358,44 @@ if uploaded_csv is not None:
     if c5.button(f"♂️ Males\n\n# {n_males}", use_container_width=True): st.session_state.map_filter = 'Males'
     if c6.button(f"👶 Calves\n\n# {n_calves}", use_container_width=True): st.session_state.map_filter = 'Calves'
 
-    # --- STRATEGIC INDICATORS (TRENDS) ---
-    st.markdown("### 🛡️ Strategic Indicators (vs. Previous Period)")
-    k1, k2, k3, k4 = st.columns(4)
+    # --- STRATEGIC INDICATORS ---
+    st.markdown("### 🛡️ Strategic Indicators")
+    cols_count = 5 if village_df is not None else 4
+    k_cols = st.columns(cols_count)
     
     curr_sev = df['Severity Score'].sum()
     prev_sev = df_prev['Severity Score'].sum()
-    k1.metric("🚨 Conflict Severity Score", f"{curr_sev:.1f}", delta=f"{curr_sev - prev_sev:.1f}", delta_color="inverse")
+    k_cols[0].metric("🚨 Severity Score", f"{curr_sev:.1f}", delta=f"{curr_sev - prev_sev:.1f}", delta_color="inverse")
     
     curr_hec = (n_conflicts / n_sightings * 100) if n_sightings > 0 else 0
-    prev_conf = ((df_prev['Crop Damage']>0) | (df_prev['House Damage']>0) | (df_prev['Injury']>0)).sum()
-    prev_sight = len(df_prev)
-    prev_hec = (prev_conf / prev_sight * 100) if prev_sight > 0 else 0
-    k2.metric("⚠️ HEC Ratio", f"{curr_hec:.1f}%", delta=f"{curr_hec - prev_hec:.1f}%", delta_color="inverse")
+    prev_hec = (((df_prev['Crop Damage']>0)|(df_prev['House Damage']>0)|(df_prev['Injury']>0)).sum() / len(df_prev) * 100) if len(df_prev) > 0 else 0
+    k_cols[1].metric("⚠️ HEC Ratio", f"{curr_hec:.1f}%", delta=f"{curr_hec - prev_hec:.1f}%", delta_color="inverse")
     
     curr_night = (df['Is_Night'].sum() / n_sightings * 100) if n_sightings > 0 else 0
-    prev_night = (df_prev['Is_Night'].sum() / prev_sight * 100) if prev_sight > 0 else 0
-    k3.metric("🌙 Nocturnal Activity", f"{curr_night:.1f}%", delta=f"{curr_night - prev_night:.1f}%", delta_color="inverse")
+    prev_night = (df_prev['Is_Night'].sum() / len(df_prev) * 100) if len(df_prev) > 0 else 0
+    k_cols[2].metric("🌙 Night Activity", f"{curr_night:.1f}%", delta=f"{curr_night - prev_night:.1f}%", delta_color="inverse")
     
+    # Hotspot Logic
     if not df.empty:
         beat_stats = df.groupby(['Beat', 'Range', 'Division'])['Severity Score'].sum().reset_index()
         beat_stats = beat_stats.sort_values(by='Severity Score', ascending=False)
-        
         if not beat_stats.empty and beat_stats.iloc[0]['Severity Score'] > 0:
             top_beat = beat_stats.iloc[0]
-            hotspot_label = top_beat['Beat']
-            hotspot_info = f"Score: {top_beat['Severity Score']:.1f} \n({start} to {end}, {top_beat['Range']}, {top_beat['Division']})"
-            k4.metric("🔁 Top Conflict Hotspot", hotspot_label, hotspot_info)
+            hotspot_info = f"Score: {top_beat['Severity Score']:.1f}\n({start} to {end}, {top_beat['Range']}, {top_beat['Division']})"
+            k_cols[3].metric("🔁 Top Hotspot", top_beat['Beat'], hotspot_info)
         else:
-            k4.metric("🔁 Top Conflict Hotspot", "None", "No Conflicts")
+            k_cols[3].metric("🔁 Top Hotspot", "None", "No Conflicts")
     else:
-        k4.metric("🔁 Top Conflict Hotspot", "No Data", "")
+        k_cols[3].metric("🔁 Top Hotspot", "No Data", "")
 
-    with st.expander("ℹ️ Indicator Methodology"):
-        st.markdown("""
-        * **Conflict Severity Score:** Weighted Index. *Score = (Presence × 1) + (Crop × 2.5) + (House × 5) + (Human Injury × 20)*.
-        * **HEC Ratio:** Percentage of entries that resulted in conflict events.
-        * **Nocturnal Activity:** % of sightings between 18:00 (6 PM) and 06:00 (6 AM).
-        * **Trends:** Compares the selected date range against the immediately preceding period of the same length.
-        """)
+    # Village Risk Metric
+    if village_df is not None:
+        high_risk_count = df['Near Village'].sum() if 'Near Village' in df.columns else 0
+        k_cols[4].metric("🏠 Proximity Risk", f"{high_risk_count}", "Sightings <500m from Village", delta_color="inverse")
 
-    st.info(f"📍 **Map View:** {st.session_state.map_filter} | **Mode:** {map_mode}")
+    st.info(f"📍 **Map View:** {st.session_state.map_filter}")
 
-    # --- INTERACTIVE MAP ---
+    # --- MAP ---
     st.divider()
     c_map, c_legend = st.columns([3, 1])
     
@@ -495,13 +441,13 @@ if uploaded_csv is not None:
             for _, row in map_df.iterrows():
                 icon = 'eye'; color = 'green'; opacity = 1.0
                 if row['Sighting Type'] == 'Direct': color = 'blue'
-                is_conflict = False
-                if row['Injury'] > 0: icon = 'medkit'; color = 'darkred'; is_conflict = True
-                elif row['House Damage'] > 0: icon = 'home'; color = 'red'; is_conflict = True
-                elif row['Crop Damage'] > 0: icon = 'leaf'; color = 'orange'; is_conflict = True
+                if row['Injury'] > 0: icon = 'medkit'; color = 'darkred'; opacity = 1.0
+                elif row['House Damage'] > 0: icon = 'home'; color = 'red'; opacity = 1.0
+                elif row['Crop Damage'] > 0: icon = 'leaf'; color = 'orange'; opacity = 1.0
                 
-                if is_conflict: opacity = 0.5
-
+                # Dynamic tooltip with village info if available
+                village_info = f"<br><b>🏠 Near:</b> {row['Nearest Village']} ({row['Distance to Village (km)']:.1f} km)" if 'Nearest Village' in row and pd.notnull(row['Nearest Village']) else ""
+                
                 tooltip_html = f"""
                 <div style='font-size:12px; width:200px'>
                     <b>📅 {row['Date'].date()}</b> | {row['Time']}<br>
@@ -509,6 +455,7 @@ if uploaded_csv is not None:
                     <hr style='margin:5px 0'>
                     <b>🐘 Signs:</b> {int(row['Total Count'])} (M:{int(row['Male Count'])} C:{int(row['Calf Count'])})<br>
                     <b>📍 {row['Beat']}</b>
+                    {village_info}
                 </div>
                 """
                 folium.Marker(
@@ -521,45 +468,37 @@ if uploaded_csv is not None:
         st_folium(m, width="100%", height=500, returned_objects=[])
 
     with c_legend:
-        st.markdown("#### Map Legend")
-        st.info("**Visual Hierarchy**")
-        st.markdown("🔴 **Conflict:** Red/Orange Pin")
-        st.markdown("🔵 **Direct Sighting:** Blue Pin")
-        st.markdown("🟢 **Indirect Sighting:** Green Pin")
+        st.subheader("Patrol Gaps")
+        active_beats = {b.strip().title() for b in df['Beat'].unique()}
+        all_beats_clean = {b.strip().title() for b in all_loaded_beats}
+        missing_beats = list(all_beats_clean - active_beats)
+        coverage_pct = len(active_beats) / len(all_beats_clean) * 100 if all_beats_clean else 0
+        st.metric("Patrol Coverage", f"{coverage_pct:.1f}%")
+        if missing_beats:
+            with st.expander("🔻 Beats with Zero Reports"):
+                st.write(", ".join(sorted(missing_beats)))
 
-    # --- CHARTS SECTION ---
+    # --- CHARTS ---
     st.divider()
     r1c1, r1c2 = st.columns(2)
     with r1c1:
         st.subheader("Hierarchy Drill-Down")
         if not df.empty:
             sb_df = df.copy()
-            sb_value_col = 'Total Count' # Default
-            sb_title = "Overall Sighting Distribution"
-
-            if st.session_state.map_filter == 'Conflict':
+            sb_val = 'Total Count'
+            if st.session_state.map_filter == 'Conflict': 
                 sb_df = sb_df[(sb_df['Crop Damage']>0)|(sb_df['House Damage']>0)|(sb_df['Injury']>0)]
-                sb_df['Incidents'] = 1
-                sb_value_col = 'Incidents'
-                sb_title = "Conflict Incident Distribution"
-            elif st.session_state.map_filter == 'Direct':
-                sb_df = sb_df[sb_df['Sighting Type'] == 'Direct']
-                sb_title = "Direct Sighting Distribution"
-            elif st.session_state.map_filter == 'Males':
-                sb_df = sb_df[sb_df['Male Count'] > 0]
-                sb_value_col = 'Male Count'
-                sb_title = "Male Elephant Distribution"
-            elif st.session_state.map_filter == 'Calves':
-                sb_df = sb_df[sb_df['Calf Count'] > 0]
-                sb_value_col = 'Calf Count'
-                sb_title = "Calf Distribution"
-
+                sb_df['Incidents'] = 1; sb_val = 'Incidents'
+            elif st.session_state.map_filter == 'Direct': sb_df = sb_df[sb_df['Sighting Type'] == 'Direct']
+            elif st.session_state.map_filter == 'Males': sb_df = sb_df[sb_df['Male Count'] > 0]; sb_val = 'Male Count'
+            elif st.session_state.map_filter == 'Calves': sb_df = sb_df[sb_df['Calf Count'] > 0]; sb_val = 'Calf Count'
+            
             if not sb_df.empty:
-                fig_sun = px.sunburst(sb_df, path=['Division', 'Range', 'Beat'], values=sb_value_col, title=sb_title)
+                fig_sun = px.sunburst(sb_df, path=['Division', 'Range', 'Beat'], values=sb_val)
                 st.plotly_chart(fig_sun, use_container_width=True)
             else:
-                st.info("No data available for this filter.")
-                fig_sun = None 
+                st.info("No data for current view.")
+                fig_sun = None
 
     with r1c2:
         st.subheader("Activity by Hour (0-24h)")
@@ -567,100 +506,14 @@ if uploaded_csv is not None:
             hourly_counts = df['Hour'].value_counts().reindex(list(range(24)), fill_value=0).reset_index()
             hourly_counts.columns = ['Hour', 'Sightings']
             fig_hourly = px.bar(hourly_counts, x='Hour', y='Sightings', 
-                                title="Hourly Activity Intensity",
-                                labels={'Hour': 'Time of Day (24h)', 'Sightings': 'Activity Count'},
-                                color='Sightings', color_continuous_scale='Viridis')
+                                title="Hourly Intensity", color='Sightings', color_continuous_scale='Viridis')
             st.plotly_chart(fig_hourly, use_container_width=True)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Daily Trends")
-        daily_counts = df.groupby('Date').size().reset_index(name='Count')
-        fig_trend = px.line(daily_counts, x='Date', y='Count', markers=True)
-        st.plotly_chart(fig_trend, use_container_width=True)
-    with c2:
-        st.subheader("Demographics")
-        demog_data = df[['Male Count', 'Female Count', 'Calf Count']].sum().reset_index()
-        demog_data.columns = ['Type', 'Count']
-        fig_demog = px.pie(demog_data, values='Count', names='Type', hole=0.4)
-        st.plotly_chart(fig_demog, use_container_width=True)
-
-    c4 = st.columns(1)[0]
-    with c4:
-        st.subheader("Conflict Breakdown")
-        damage_sums = df[['Crop Damage', 'House Damage', 'Injury']].apply(lambda x: (x > 0).sum()).reset_index()
-        damage_sums.columns = ['Damage Type', 'Incidents']
-        damage_sums = damage_sums[damage_sums['Incidents'] > 0]
-        if not damage_sums.empty:
-            fig_damage = px.pie(damage_sums, values='Incidents', names='Damage Type', 
-                                color='Damage Type',
-                                color_discrete_map={'Crop Damage':'orange', 'House Damage':'red', 'Injury':'darkred'})
-            st.plotly_chart(fig_damage, use_container_width=True)
-        else:
-            fig_damage = px.pie(title="No Damages Reported")
-            st.info("No damage incidents reported.")
-
+    # --- REPORT GEN ---
     st.divider()
-    
-    # --- VILLAGE ANALYSIS SECTION ---
-    if not villages_df.empty:
-        st.subheader("🏘️ Affected Villages & Risk Zones")
-        
-        # 1. High Risk: Conflict Incidents (2km radius)
-        conflict_df = df[(df['Crop Damage']>0)|(df['House Damage']>0)|(df['Injury']>0)]
-        risk_villages = calculate_risk_zones(conflict_df, villages_df, 2.0)
-        
-        # 2. Alert Zone: Other Reports (5km radius)
-        presence_df = df[~((df['Crop Damage']>0)|(df['House Damage']>0)|(df['Injury']>0))]
-        alert_villages = calculate_risk_zones(presence_df, villages_df, 5.0)
-        
-        t_risk, t_alert = st.tabs(["🚨 High Risk (2km)", "⚠️ Alert Zone (5km)"])
-        
-        with t_risk:
-            if not risk_villages.empty:
-                st.error(f"Identify {len(risk_villages)} villages near active conflicts.")
-                st.dataframe(risk_villages, use_container_width=True)
-            else:
-                st.success("No villages in immediate conflict radius.")
-                
-        with t_alert:
-            if not alert_villages.empty:
-                st.warning(f"Identify {len(alert_villages)} villages near elephant presence.")
-                st.dataframe(alert_villages, use_container_width=True)
-            else:
-                st.info("No villages in presence radius.")
-
-    st.divider()
-    t1, t2 = st.tabs(["⚠️ Damage Report", "🏆 Leaderboards"])
-    with t1:
-        dmg = df.groupby(['Division', 'Range']).agg({'Crop Damage': lambda x: (x>0).sum(), 'House Damage': lambda x: (x>0).sum(), 'Injury': lambda x: (x>0).sum()}).reset_index()
-        dmg = dmg[(dmg['Crop Damage']>0)|(dmg['House Damage']>0)|(dmg['Injury']>0)]
-        dmg.columns = ['Division', 'Range', '🌾 Crop', '🏠 House', '🚑 Injury']
-        st.dataframe(dmg.style.background_gradient(cmap="Reds"), use_container_width=True)
-    with t2:
-        l1, l2 = st.columns(2)
-        with l1:
-            st.markdown("**Top Beats (Activity)**")
-            if 'Beat' in df.columns:
-                st.dataframe(df['Beat'].value_counts().reset_index(name='Entries').head(10), use_container_width=True, hide_index=True)
-        with l2:
-            st.markdown("**Top Reporters**")
-            if 'Created By' in df.columns:
-                st.dataframe(df['Created By'].value_counts().reset_index(name='Entries').head(10), use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.subheader("📄 Report Generation")
-    
     if st.button("🖨️ Generate Full Report"):
-        # Pass fig_sun only if created
-        sunburst_chart = fig_sun if 'fig_sun' in locals() and fig_sun else None
-        html_report = generate_full_html_report(df, m, fig_trend, fig_demog, fig_hourly, fig_damage, sunburst_chart, start, end)
-        st.download_button(
-            label="📥 Download HTML Report",
-            data=html_report,
-            file_name="Elephant_Monitoring_Report.html",
-            mime="text/html"
-        )
-
+        sb_chart = fig_sun if 'fig_sun' in locals() and fig_sun else None
+        html_report = generate_full_html_report(df, m, fig_trend, fig_demog, fig_hourly, fig_damage, sb_chart, start, end)
+        st.download_button("📥 Download HTML Report", html_report, "Elephant_Monitoring_Report.html", "text/html")
 else:
     st.info("👆 Upload CSV to begin.")

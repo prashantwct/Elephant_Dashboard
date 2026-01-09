@@ -72,10 +72,10 @@ def haversine_np(lon1, lat1, lon2, lat2):
     km = 6367 * c
     return km
 
-def calculate_nearest_village(sightings_df, villages_df):
+def calculate_affected_villages(sightings_df, villages_df, radius_km=2.0):
     """
-    For every sighting row, finds the nearest village and the distance to it.
-    Optimized using numpy broadcasting.
+    Finds all villages within a specified radius (default 2km) for every sighting.
+    Returns the dataframe with a new column 'Affected Villages'.
     """
     if villages_df is None or sightings_df.empty:
         return sightings_df
@@ -85,17 +85,23 @@ def calculate_nearest_village(sightings_df, villages_df):
     v_lats = villages_df['Latitude'].values
     v_names = villages_df['Village'].values
     
-    def get_nearest(row):
+    def get_villages_in_radius(row):
         # Calculate distance from this sighting to ALL villages
         dists = haversine_np(v_lons, v_lats, row['Longitude'], row['Latitude'])
-        # Find index of minimum distance
-        min_idx = np.argmin(dists)
-        return pd.Series([v_names[min_idx], dists[min_idx]])
+        
+        # Filter for villages within the radius
+        mask = dists <= radius_km
+        nearby_villages = v_names[mask]
+        
+        # Return comma-separated string of villages, or "None" if none found
+        if len(nearby_villages) > 0:
+            return ", ".join(sorted(nearby_villages))
+        else:
+            return "None"
 
     # Apply to all rows
-    sightings_df[['Nearest Village', 'Distance to Village (km)']] = sightings_df.apply(get_nearest, axis=1)
+    sightings_df['Affected Villages'] = sightings_df.apply(get_villages_in_radius, axis=1)
     return sightings_df
-
 # ==========================================
 # 3. KML/GEOJSON PARSING (Map Layers)
 # ==========================================
@@ -703,3 +709,4 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+

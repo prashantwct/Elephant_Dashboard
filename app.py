@@ -577,8 +577,7 @@ if uploaded_csv is not None:
                     elif row['Crop Damage']>0: color='orange'
                     elif row['Sighting Type'] == 'Direct': color='blue'
                     
-                # Tooltip
-                v_text = f"<br>🏠 {row['Nearest Village']} ({row['Distance to Village (km)']:.1f}km)" if 'Nearest Village' in row and pd.notnull(row['Nearest Village']) else ""
+                v_text = f"<br>🏠 {row['Affected Villages']}" if 'Affected Villages' in row and row['Affected Villages'] != "None" else ""
                 tooltip = f"<b>{row['Date'].date()}</b><br>Loc: {row['Beat']}<br>Score: {row['Severity Score']:.1f}{v_text}"
                 
                 folium.CircleMarker(
@@ -590,19 +589,21 @@ if uploaded_csv is not None:
         st_folium(m, width="100%", height=500, returned_objects=[])
 
     with c_legend:
-        st.subheader("🏠 Affected Villages")
-        if 'Nearest Village' in df.columns:
-            # Filter affected villages based on CURRENT map view (not just global)
+       st.subheader("🏠 Affected Villages")
+        # Check if 'Affected Villages' column exists
+        if 'Affected Villages' in df.columns:
             affected_df = map_df[map_df['Near Village'] == True]
             if not affected_df.empty:
-                v_counts = affected_df['Nearest Village'].value_counts().head(10).reset_index()
+                # Split comma-separated strings to count individual villages
+                all_villages = affected_df['Affected Villages'].str.split(', ').explode()
+                v_counts = all_villages.value_counts().head(10).reset_index()
                 v_counts.columns = ['Village', 'Incidents']
                 st.dataframe(v_counts, use_container_width=True, hide_index=True)
             else:
-                st.write("No villages within 500m of sightings in current view.")
+                st.write("No villages found within 2km of sightings in current view.")
         else:
             st.info("Upload 'centroids.csv' to see village data.")
-
+            
     # --- G. ANALYTICS CHARTS ---
     st.divider()
     r1c1, r1c2 = st.columns(2)
@@ -710,5 +711,6 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 

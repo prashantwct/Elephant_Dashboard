@@ -72,6 +72,89 @@ def haversine_np(lon1, lat1, lon2, lat2):
     km = 6367 * c
     return km
 
+def identify_risk_villages(sightings_df, villages_df):
+    """
+    Identifies affected villages based on:
+    1. PRESENCE: Sighting within 5km for the last 3 consecutive days (relative to max date).
+    2. DAMAGE: Crop/House damage within 2km (any time in current selection).
+    """
+    if villages_df is None or sightings_df.empty:
+        return []
+
+    # Prepare Coordinates
+    v_lons = villages_df['Longitude'].values
+    v_lats = villages_df['Latitude'].values
+    v_names = villages_df['Village'].values
+    
+    s_lons = sightings_df['Longitude'].values
+    s_lats = sightings_df['Latitude'].values
+    
+    # Calculate Full Distance Matrix (Villages x Sightings)
+    # Shape: (Num_Villages, Num_Sightings)
+    # broadcasting: v (N,1) vs s (1,M) -> (N,M)
+    dists = haversine_np(v_lons[:, np.newaxis], v_lats[:, np.newaxis], s_lons[np.newaxis, :], s_lats[np.newaxis, :])
+    
+    affected_list = []
+    
+    # --- CRITERIA 1: DAMAGE (< 2km) ---
+    # Find sightings with damage
+    damage_mask = (sightings_df['Crop Damage'] > 0) | (sightings_df['House Damage'] > 0)
+    if damage_mask.any():
+        # Get indices of damage sightings
+        dmg_indices = np.where(damage_mask)[0]
+        # Check distances for these specific sightings
+        # dists[:, dmg_indices] gives distances from all villages to damage sightings
+        # np.min(..., axis=1) finds the closest damage event for each village
+        min_dmg_dists = np.min(dists[:, dmg_indices], axis=1)
+        
+        # Identify villages < 2km from ANY damage
+        dmg_v_indices = np.where(min_dmg_dists <= 2.0)[0]
+        for idx in dmg_v_indices:
+            affected_list.append({
+                'Village': v_names[idx],
+                'Lat': v_lats[idx],
+                'Lon': v_lons[idx],
+                'Reason': 'Damage Reported (<2km)',
+                'Color': 'red'
+            })
+
+    # --- CRITERIA 2: 3-DAY PRESENCE (< 5km) ---
+    max_date = sightings_df['Date'].max()
+    date_3 = max_date
+    date_2 = max_date - timedelta(days=1)
+    date_1 = max_date - timedelta(days=2)
+    
+    # Get indices for each of the last 3 days
+    # We need to know which columns in 'dists' correspond to which dates
+    dates = sightings_df['Date'].values
+    
+    idx_d3 = np.where(dates == np.datetime64(date_3))[0]
+    idx_d2 = np.where(dates == np.datetime64(date_2))[0]
+    idx_d1 = np.where(dates == np.datetime64(date_1))[0]
+    
+    if len(idx_d3) > 0 and len(idx_d2) > 0 and len(idx_d1) > 0:
+        # Check if village is < 5km from AT LEAST ONE sighting on EACH day
+        # min(dists) <= 5.0 for that day's subset
+        has_d3 = np.any(dists[:, idx_d3] <= 5.0, axis=1)
+        has_d2 = np.any(dists[:, idx_d2] <= 5.0, axis=1)
+        has_d1 = np.any(dists[:, idx_d1] <= 5.0, axis=1)
+        
+        # Combine: Must be True for ALL 3 days
+        persistent_mask = has_d3 & has_d2 & has_d1
+        
+        for idx in np.where(persistent_mask)[0]:
+            # Avoid duplicates if already caught by Damage
+            if not any(d['Village'] == v_names[idx] for d in affected_list):
+                affected_list.append({
+                    'Village': v_names[idx],
+                    'Lat': v_lats[idx],
+                    'Lon': v_lons[idx],
+                    'Reason': '3-Day Presence (<5km)',
+                    'Color': 'orange'
+                })
+                
+    return affected_list
+
 def calculate_affected_villages(sightings_df, villages_df, radius_km=2.0):
     """
     Finds all villages within a specified radius (default 2km) for every sighting.
@@ -552,7 +635,7 @@ if uploaded_csv is not None:
                 tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Region:'])
             ).add_to(m)
 
-        # 2. Markers
+        # 2. Markers (SIGHTINGS)
         if map_mode == "Heatmap":
             heat_data = [[r['Latitude'], r['Longitude'], max(r['Severity Score'], 1)] for _, r in map_df.iterrows()]
             HeatMap(heat_data, radius=15, blur=10).add_to(m)
@@ -571,14 +654,13 @@ if uploaded_csv is not None:
                 elif st.session_state.map_filter == 'Night_View':
                     color='purple'; radius=6
                 else:
-                    # Default Context Colors
                     if row['Injury']>0: color='darkred'
                     elif row['House Damage']>0: color='red'
                     elif row['Crop Damage']>0: color='orange'
                     elif row['Sighting Type'] == 'Direct': color='blue'
-                    
-                v_text = f"<br>🏠 {row['Affected Villages']}" if 'Affected Villages' in row and row['Affected Villages'] != "None" else ""
-                tooltip = f"<b>{row['Date'].date()}</b><br>Loc: {row['Beat']}<br>Score: {row['Severity Score']:.1f}{v_text}"
+                
+                # Sighting Tooltip
+                tooltip = f"<b>{row['Date'].date()}</b><br>Loc: {row['Beat']}<br>Score: {row['Severity Score']:.1f}"
                 
                 folium.CircleMarker(
                     [row['Latitude'], row['Longitude']],
@@ -586,8 +668,31 @@ if uploaded_csv is not None:
                     tooltip=tooltip
                 ).add_to(m)
 
-        st_folium(m, width="100%", height=500, returned_objects=[])
+        # 3. Affected Villages (RINGS)
+        # Calculate using the NEW advanced logic
+        if village_df is not None:
+            risk_villages = identify_risk_villages(map_df, village_df)
+            
+            for v in risk_villages:
+                # Draw 2km Buffer Ring
+                folium.Circle(
+                    location=[v['Lat'], v['Lon']],
+                    radius=2000,   # 2km fixed buffer
+                    color=v['Color'],
+                    weight=2,
+                    fill=True,
+                    fill_opacity=0.1,
+                    tooltip=f"<b>Affected Village: {v['Village']}</b><br>Reason: {v['Reason']}"
+                ).add_to(m)
+                
+                # Village Icon
+                folium.Marker(
+                    location=[v['Lat'], v['Lon']],
+                    icon=folium.Icon(color="gray", icon="home", prefix="fa"),
+                    tooltip=f"<b>{v['Village']}</b>"
+                ).add_to(m)
 
+        st_folium(m, width="100%", height=500, returned_objects=[])
     with c_legend:
         st.subheader("🏠 Affected Villages")
         
@@ -716,6 +821,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

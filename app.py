@@ -21,21 +21,24 @@ LOGO_MP = "https://upload.wikimedia.org/wikipedia/commons/2/23/Emblem_of_Madhya_
 
 @st.cache_data
 def load_village_data(filepath="centroids.csv"):
-    """Loads village centroid data if available."""
+    """Loads village centroid data if available, handling encoding errors."""
     if os.path.exists(filepath):
         try:
+            # Try default UTF-8 first
             v_df = pd.read_csv(filepath)
-            required_cols = {'Village', 'Latitude', 'Longitude'}
-            # Case-insensitive column check
-            v_df.columns = [c.strip() for c in v_df.columns]
-            # Normalize common variations
-            rename_map = {'Lat': 'Latitude', 'Lon': 'Longitude', 'Long': 'Longitude', 'Name': 'Village'}
-            v_df = v_df.rename(columns=rename_map)
-            
-            if required_cols.issubset(v_df.columns):
-                return v_df
+        except UnicodeDecodeError:
+            # Fallback to Latin-1 for Excel files
+            v_df = pd.read_csv(filepath, encoding='ISO-8859-1')
         except Exception:
             return None
+
+        required_cols = {'Village', 'Latitude', 'Longitude'}
+        v_df.columns = [c.strip() for c in v_df.columns]
+        rename_map = {'Lat': 'Latitude', 'Lon': 'Longitude', 'Long': 'Longitude', 'Name': 'Village'}
+        v_df = v_df.rename(columns=rename_map)
+        
+        if required_cols.issubset(v_df.columns):
+            return v_df
     return None
 
 def haversine_np(lon1, lat1, lon2, lat2):
@@ -56,9 +59,6 @@ def calculate_nearest_village(sightings_df, villages_df):
     if villages_df is None or sightings_df.empty:
         return sightings_df
 
-    # Cross join is too heavy for large datasets, using a simpler apply approach
-    # (For very large datasets, Scipy cKDTree is better, but keeping dependencies minimal here)
-    
     def get_nearest(row):
         dists = haversine_np(
             villages_df['Longitude'].values, 
@@ -171,7 +171,7 @@ def load_map_data_as_geojson(folder_path="."):
                         }
                         features.append(feature)
         except Exception:
-            pass # Silent fail for map load
+            pass 
     return features, list(all_beats)
 
 # --- 3. REPORT GENERATOR ---
@@ -194,7 +194,6 @@ def generate_full_html_report(df, map_object, fig_trend, fig_demog, fig_hourly, 
     <br>
     """
     
-    # Method section
     methodology = """
     <div style="margin-top: 20px; border: 1px solid #ddd; padding: 15px; background-color: #fafafa;">
         <h5>ℹ️ Methodology & Definitions</h5>
@@ -253,7 +252,6 @@ def generate_full_html_report(df, map_object, fig_trend, fig_demog, fig_hourly, 
 
 st.set_page_config(page_title="Elephant Dashboard", layout="wide")
 
-# SIDEBAR
 with st.sidebar:
     c1, c2 = st.columns([1, 1])
     c1.markdown(f'<img src="{LOGO_WCT}" width="100%">', unsafe_allow_html=True)
@@ -268,7 +266,7 @@ if 'map_filter' not in st.session_state: st.session_state.map_filter = 'All'
 
 # A. LOAD DATA
 geojson_features, all_loaded_beats = load_map_data_as_geojson(".")
-village_df = load_village_data("centroids.csv") # Try loading village data
+village_df = load_village_data("centroids.csv")
 
 if geojson_features:
     with st.expander(f"✅ Map Data Loaded ({len(geojson_features)} regions)"):
@@ -283,8 +281,13 @@ else:
 uploaded_csv = st.file_uploader("Upload Sightings Report (CSV)", type=['csv'])
 
 if uploaded_csv is not None:
-    # 1. Load Raw Data
-    df_raw = pd.read_csv(uploaded_csv)
+    # 1. Load Raw Data with Encoding Protection
+    try:
+        df_raw = pd.read_csv(uploaded_csv)
+    except UnicodeDecodeError:
+        uploaded_csv.seek(0)
+        df_raw = pd.read_csv(uploaded_csv, encoding='ISO-8859-1')
+        
     df_raw['Date'] = pd.to_datetime(df_raw['Date'], format='%d-%m-%Y', errors='coerce')
     try: df_raw['Hour'] = pd.to_datetime(df_raw['Time'], format='%H:%M:%S', errors='coerce').dt.hour
     except: df_raw['Hour'] = 0 
@@ -307,10 +310,9 @@ if uploaded_csv is not None:
     df_raw['DayOfWeek'] = df_raw['Date'].dt.day_name()
     df_raw['Is_Night'] = df_raw['Hour'].apply(lambda x: 1 if (x >= 18 or x <= 6) else 0)
     
-    # Calculate Village Proximity if data exists
     if village_df is not None:
         df_raw = calculate_nearest_village(df_raw, village_df)
-        df_raw['Near Village'] = df_raw['Distance to Village (km)'] < 0.5 # 500m threshold
+        df_raw['Near Village'] = df_raw['Distance to Village (km)'] < 0.5 
 
     # --- FILTERS ---
     with st.sidebar:
@@ -319,7 +321,6 @@ if uploaded_csv is not None:
         start, end = st.date_input("Date Range", [min_date, max_date], min_value=min_date, max_value=max_date)
         df = df_raw[(df_raw['Date'].dt.date >= start) & (df_raw['Date'].dt.date <= end)]
         
-        # Trend Calc
         delta_days = (end - start).days + 1
         prev_end = start - timedelta(days=1)
         prev_start = prev_end - timedelta(days=delta_days - 1)
@@ -375,7 +376,6 @@ if uploaded_csv is not None:
     prev_night = (df_prev['Is_Night'].sum() / len(df_prev) * 100) if len(df_prev) > 0 else 0
     k_cols[2].metric("🌙 Night Activity", f"{curr_night:.1f}%", delta=f"{curr_night - prev_night:.1f}%", delta_color="inverse")
     
-    # Hotspot Logic
     if not df.empty:
         beat_stats = df.groupby(['Beat', 'Range', 'Division'])['Severity Score'].sum().reset_index()
         beat_stats = beat_stats.sort_values(by='Severity Score', ascending=False)
@@ -388,7 +388,6 @@ if uploaded_csv is not None:
     else:
         k_cols[3].metric("🔁 Top Hotspot", "No Data", "")
 
-    # Village Risk Metric
     if village_df is not None:
         high_risk_count = df['Near Village'].sum() if 'Near Village' in df.columns else 0
         k_cols[4].metric("🏠 Proximity Risk", f"{high_risk_count}", "Sightings <500m from Village", delta_color="inverse")
@@ -445,7 +444,6 @@ if uploaded_csv is not None:
                 elif row['House Damage'] > 0: icon = 'home'; color = 'red'; opacity = 1.0
                 elif row['Crop Damage'] > 0: icon = 'leaf'; color = 'orange'; opacity = 1.0
                 
-                # Dynamic tooltip with village info if available
                 village_info = f"<br><b>🏠 Near:</b> {row['Nearest Village']} ({row['Distance to Village (km)']:.1f} km)" if 'Nearest Village' in row and pd.notnull(row['Nearest Village']) else ""
                 
                 tooltip_html = f"""

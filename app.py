@@ -406,10 +406,11 @@ if uploaded_csv is not None:
     # Day/Night
     df_raw['Is_Night'] = df_raw['Hour'].apply(lambda x: 1 if (x >= 18 or x <= 6) else 0)
     
-    # Village Distance
+    # Village Distance (Updated for 2km Radius)
     if village_df is not None:
-        df_raw = calculate_nearest_village(df_raw, village_df)
-        df_raw['Near Village'] = df_raw['Distance to Village (km)'] < 0.5 
+        df_raw = calculate_affected_villages(df_raw, village_df, radius_km=2.0)
+        # Mark as 'Near Village' if the list is not "None"
+        df_raw['Near Village'] = df_raw['Affected Villages'] != "None"
 
     # --- C. FILTERS (Global Scope) ---
     with st.sidebar:
@@ -709,4 +710,5 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 

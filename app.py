@@ -608,14 +608,30 @@ if uploaded_csv is not None:
     if 'selected_village' not in st.session_state:
         st.session_state.selected_village = None
 
-    # 2. Calculate Risk Villages (Based on current filters)
-    # We calculate this BEFORE the columns so we can use the list for the sidebar
+    # 2. PREPARE BASE MAP DATA (Apply Global Filters)
+    # We must define map_df here before using it for logic
+    map_df = df.copy()
+    
+    if st.session_state.map_filter == 'Conflict':
+        map_df = map_df[(map_df['Crop Damage']>0)|(map_df['House Damage']>0)|(map_df['Injury']>0)]
+    elif st.session_state.map_filter == 'Night_View':
+        map_df = map_df[map_df['Is_Night'] == 1]
+    elif st.session_state.map_filter == 'Hotspot_View' and st.session_state.hotspot_beat:
+        map_df = map_df[map_df['Beat'] == st.session_state.hotspot_beat]
+    elif st.session_state.map_filter == 'Direct':
+        map_df = map_df[map_df['Sighting Type'] == 'Direct']
+    elif st.session_state.map_filter == 'Males':
+        map_df = map_df[map_df['Male Count'] > 0]
+    elif st.session_state.map_filter == 'Calves':
+        map_df = map_df[map_df['Calf Count'] > 0]
+
+    # 3. Calculate Risk Villages (Based on filtered data)
     risk_villages = []
     if village_df is not None:
-        risk_villages = identify_risk_villages(df, village_df, p_dmg_rad, p_pres_rad, p_days)
+        risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
 
-    # 3. Handle Selection & Map Data
-    displayed_map_df = map_df.copy() # Start with the view filter (Conflict/Night/etc)
+    # 4. Handle Selection & Zoom Logic
+    displayed_map_df = map_df.copy() # Now map_df is successfully defined
     
     # Default View
     map_center = [23.5, 80.5]
@@ -629,11 +645,9 @@ if uploaded_csv is not None:
             map_center = [sel_v['Lat'], sel_v['Lon']]
             map_zoom = 13 # Close up zoom
             
-            # Filter sightings to those surrounding the village (using max radius)
-            # This makes the map "Reactive" - showing relevant sightings only
+            # Filter sightings to those surrounding the village
             search_rad = max(p_dmg_rad, p_pres_rad)
             
-            # Calculate distances for the current map_df
             v_lons = sel_v['Lon']
             v_lats = sel_v['Lat']
             s_lons = displayed_map_df['Longitude'].values
@@ -641,10 +655,9 @@ if uploaded_csv is not None:
             
             if len(s_lons) > 0:
                 dists = haversine_np(v_lons, v_lats, s_lons, s_lats)
-                # Keep only sightings within the relevance radius
                 displayed_map_df = displayed_map_df[dists <= search_rad]
 
-    # 4. Create Layout (Map Left, List Right)
+    # 5. Create Layout (Map Left, List Right)
     c_map, c_list = st.columns([3, 1])
     
     # --- RIGHT COLUMN: REACTIVE VILLAGE LIST ---
@@ -712,7 +725,6 @@ if uploaded_csv is not None:
                     elif row['Sighting Type'] == 'Direct': color='blue'
                 
                 # --- NEW TOOLTIP: SIGHTING DETAILS ONLY ---
-                # Build damage string
                 dmg_str = []
                 if row['Crop Damage'] > 0: dmg_str.append('Crop')
                 if row['House Damage'] > 0: dmg_str.append('House')
@@ -734,9 +746,8 @@ if uploaded_csv is not None:
                     tooltip=tooltip
                 ).add_to(m)
 
-       # 3. Affected Villages (RINGS) - Only show relevant ones
+       # 3. Affected Villages (RINGS)
         if village_df is not None:
-            # If a village is selected, only show that one. Otherwise show all risk villages.
             villages_to_show = [v for v in risk_villages if v['Village'] == st.session_state.selected_village] if st.session_state.selected_village else risk_villages
             
             for v in villages_to_show:
@@ -756,7 +767,7 @@ if uploaded_csv is not None:
                     tooltip=f"<b>{v['Village']}</b>"
                 ).add_to(m)
 
-        # RENDER MAP (With returned_objects=[] to prevent loop)
+        # RENDER MAP
         st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
    
    # --- G. ANALYTICS CHARTS ---
@@ -876,6 +887,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

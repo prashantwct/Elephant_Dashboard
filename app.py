@@ -607,7 +607,7 @@ if uploaded_csv is not None:
     if 'selected_village' not in st.session_state:
         st.session_state.selected_village = None
 
-    # 2. PREPARE BASE MAP DATA (Apply Global Filters)
+    # 2. PREPARE BASE MAP DATA
     map_df = df.copy()
     
     if st.session_state.map_filter == 'Conflict':
@@ -623,7 +623,7 @@ if uploaded_csv is not None:
     elif st.session_state.map_filter == 'Calves':
         map_df = map_df[map_df['Calf Count'] > 0]
 
-    # 3. Calculate Risk Villages (Based on filtered data)
+    # 3. Calculate Risk Villages
     risk_villages = []
     if village_df is not None:
         risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
@@ -635,63 +635,49 @@ if uploaded_csv is not None:
     map_center = [23.5, 80.5]
     map_zoom = 9
     
-    # If a village is clicked, filter data and zoom in
     if st.session_state.selected_village and village_df is not None:
-        # Find the selected village data
         sel_v = next((v for v in risk_villages if v['Village'] == st.session_state.selected_village), None)
         if sel_v:
             map_center = [sel_v['Lat'], sel_v['Lon']]
-            map_zoom = 13 # Close up zoom
-            
-            # Filter sightings to those surrounding the village
+            map_zoom = 13
             search_rad = max(p_dmg_rad, p_pres_rad)
-            
             v_lons = sel_v['Lon']
             v_lats = sel_v['Lat']
             s_lons = displayed_map_df['Longitude'].values
             s_lats = displayed_map_df['Latitude'].values
-            
             if len(s_lons) > 0:
                 dists = haversine_np(v_lons, v_lats, s_lons, s_lats)
                 displayed_map_df = displayed_map_df[dists <= search_rad]
 
-    # 5. Create Layout (Map Left, List Right)
+    # 5. Create Layout
     c_map, c_list = st.columns([3, 1])
     
-    # --- RIGHT COLUMN: REACTIVE VILLAGE LIST ---
+    # --- RIGHT COLUMN: LIST ---
     with c_list:
         st.subheader("🚨 Affected Villages")
-        st.caption("Click to focus map")
-        
-        # Reset Button
         if st.button("🌍 Show Full Map", type="secondary", use_container_width=True):
             st.session_state.selected_village = None
             st.rerun()
-            
         st.markdown("---")
         
-        # Village Buttons
         if not risk_villages:
-            st.info("No villages at risk based on current parameters.")
+            st.info("No villages at risk.")
         else:
             for i, v in enumerate(risk_villages):
-                # Highlight the active button
                 is_active = (v['Village'] == st.session_state.selected_village)
                 btn_type = "primary" if is_active else "secondary"
                 label = f"{'📍' if is_active else ''} {v['Village']}"
-                
-                # The Button (Unique Key fixes Duplicate Error)
-                unique_key = f"btn_{v['Village']}_{i}"
-                if st.button(f"{label}\n\n({v['Reason']})", key=unique_key, type=btn_type, use_container_width=True):
+                # Unique key prevents duplicate error
+                if st.button(f"{label}\n\n({v['Reason']})", key=f"btn_{v['Village']}_{i}", type=btn_type, use_container_width=True):
                     st.session_state.selected_village = v['Village']
                     st.rerun()
 
-    # --- LEFT COLUMN: THE MAP ---
+    # --- LEFT COLUMN: MAP ---
     with c_map:
-        # 1. Initialize Map (Default to OpenStreetMap)
+        # 1. Initialize Map
         m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="OpenStreetMap")
 
-        # 2. Add Google Hybrid Layer (Satellite + Labels)
+        # 2. Add Google Hybrid (Optional Toggle)
         folium.TileLayer(
             tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
             attr='Google',
@@ -699,10 +685,8 @@ if uploaded_csv is not None:
             overlay=False,
             control=True
         ).add_to(m)
-        
-        folium.LayerControl().add_to(m)
 
-        # 3. Boundaries
+        # 3. GeoJSON Boundaries
         if geojson_features:
             folium.GeoJson(
                 data={"type": "FeatureCollection", "features": geojson_features},
@@ -710,16 +694,14 @@ if uploaded_csv is not None:
                 tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Region:'])
             ).add_to(m)
 
-        # 4. Markers (SIGHTINGS)
+        # 4. Markers
         if map_mode == "Heatmap":
             heat_data = [[r['Latitude'], r['Longitude'], max(r['Severity Score'], 1)] for _, r in displayed_map_df.iterrows()]
             HeatMap(heat_data, radius=15, blur=10).add_to(m)
         else:
             for _, row in displayed_map_df.iterrows():
-                # Styling Logic
                 color = 'green'
                 radius = 4
-                
                 if st.session_state.map_filter == 'Severity_View':
                     s = row['Severity Score']
                     if s >= 20: color='darkred'; radius=15
@@ -734,7 +716,6 @@ if uploaded_csv is not None:
                     elif row['Crop Damage']>0: color='orange'
                     elif row['Sighting Type'] == 'Direct': color='blue'
                 
-                # Tooltip
                 dmg_str = []
                 if row['Crop Damage'] > 0: dmg_str.append('Crop')
                 if row['House Damage'] > 0: dmg_str.append('House')
@@ -756,30 +737,29 @@ if uploaded_csv is not None:
                     tooltip=tooltip
                 ).add_to(m)
 
-       # 5. Affected Villages (RINGS)
+        # 5. Risk Rings
         if village_df is not None:
             villages_to_show = [v for v in risk_villages if v['Village'] == st.session_state.selected_village] if st.session_state.selected_village else risk_villages
-            
             for v in villages_to_show:
                 folium.Circle(
                     location=[v['Lat'], v['Lon']],
                     radius=v['Radius'],
                     color=v['Color'],
                     weight=3 if st.session_state.selected_village else 2,
-                    fill=True,
-                    fill_opacity=0.15,
+                    fill=True, fill_opacity=0.15,
                     tooltip=f"<b>{v['Village']}</b><br>{v['Reason']}"
                 ).add_to(m)
-                
                 folium.Marker(
                     location=[v['Lat'], v['Lon']],
                     icon=folium.Icon(color="red" if v['Color']=='red' else "orange", icon="home", prefix="fa"),
                     tooltip=f"<b>{v['Village']}</b>"
                 ).add_to(m)
+        
+        # 6. Add Layer Control
+        folium.LayerControl().add_to(m)
 
-        # 6. RENDER MAP (CRITICAL LINE)
-        st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
-   
+        # 7. RENDER COMMAND (Crucial: Must be indented inside 'with c_map:', NOT inside 'if')
+        st_data = st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
    # --- G. ANALYTICS CHARTS ---
     st.divider()
     r1c1, r1c2 = st.columns(2)
@@ -897,6 +877,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

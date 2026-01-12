@@ -696,7 +696,7 @@ if uploaded_csv is not None:
                     icon=folium.Icon(color="gray", icon="home", prefix="fa"),
                     tooltip=f"<b>{v['Village']}</b>"
                 ).add_to(m)
-        st_data = st_folium(m, width=None, height=500, use_container_width=True)
+        st_data = st_folium(m, width=None, height=500, use_container_width=True, returned_objects=[])
    
    # --- G. ANALYTICS CHARTS ---
     st.divider()
@@ -815,6 +815,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

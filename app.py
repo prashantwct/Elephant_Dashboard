@@ -676,17 +676,18 @@ if uploaded_csv is not None:
         if not risk_villages:
             st.info("No villages at risk based on current parameters.")
         else:
-            for v in risk_villages:
+            # FIX: Use enumerate to generate a unique index 'i' for every button
+            for i, v in enumerate(risk_villages):
                 # Highlight the active button
                 is_active = (v['Village'] == st.session_state.selected_village)
                 btn_type = "primary" if is_active else "secondary"
                 label = f"{'📍' if is_active else ''} {v['Village']}"
                 
-                # The Button
-                if st.button(f"{label}\n\n({v['Reason']})", key=f"btn_{v['Village']}", type=btn_type, use_container_width=True):
+                # The Button (Now with unique key using index 'i')
+                unique_key = f"btn_{v['Village']}_{i}" 
+                if st.button(f"{label}\n\n({v['Reason']})", key=unique_key, type=btn_type, use_container_width=True):
                     st.session_state.selected_village = v['Village']
                     st.rerun()
-
     # --- LEFT COLUMN: THE MAP ---
     with c_map:
         # Initialize Map with dynamic center/zoom
@@ -887,6 +888,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

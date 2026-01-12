@@ -601,7 +601,6 @@ if uploaded_csv is not None:
     else: explanation = "📍 **Viewing All Data:** Showing all records."
     st.info(explanation)
 
-    # --- F. MAP VISUALIZATION ---
 # --- F. MAP VISUALIZATION (Reactive & Interactive) ---
     
     # 1. Initialize Selection State
@@ -688,11 +687,23 @@ if uploaded_csv is not None:
                 if st.button(f"{label}\n\n({v['Reason']})", key=unique_key, type=btn_type, use_container_width=True):
                     st.session_state.selected_village = v['Village']
                     st.rerun()
+    
     # --- LEFT COLUMN: THE MAP ---
     with c_map:
-        # Initialize Map with dynamic center/zoom
+        # 1. Initialize Map (Default to OpenStreetMap)
         m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="OpenStreetMap")
 
+        # 2. Add Google Hybrid Layer (Satellite + Labels)
+        folium.TileLayer(
+            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+            attr='Google',
+            name='Google Hybrid',
+            overlay=False,
+            control=True
+        ).add_to(m)
+
+        # 3. Add Layer Control (To switch between OSM and Hybrid)
+        folium.LayerControl().add_to(m)
         # 1. Boundaries
         if geojson_features:
             folium.GeoJson(
@@ -888,6 +899,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

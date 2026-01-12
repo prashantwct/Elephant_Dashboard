@@ -601,14 +601,13 @@ if uploaded_csv is not None:
     else: explanation = "📍 **Viewing All Data:** Showing all records."
     st.info(explanation)
 
-# --- F. MAP VISUALIZATION (Reactive & Interactive) ---
+# --- F. MAP VISUALIZATION (Reactive, Hybrid & Interactive) ---
     
     # 1. Initialize Selection State
     if 'selected_village' not in st.session_state:
         st.session_state.selected_village = None
 
     # 2. PREPARE BASE MAP DATA (Apply Global Filters)
-    # We must define map_df here before using it for logic
     map_df = df.copy()
     
     if st.session_state.map_filter == 'Conflict':
@@ -630,7 +629,7 @@ if uploaded_csv is not None:
         risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
 
     # 4. Handle Selection & Zoom Logic
-    displayed_map_df = map_df.copy() # Now map_df is successfully defined
+    displayed_map_df = map_df.copy()
     
     # Default View
     map_center = [23.5, 80.5]
@@ -675,19 +674,18 @@ if uploaded_csv is not None:
         if not risk_villages:
             st.info("No villages at risk based on current parameters.")
         else:
-            # FIX: Use enumerate to generate a unique index 'i' for every button
             for i, v in enumerate(risk_villages):
                 # Highlight the active button
                 is_active = (v['Village'] == st.session_state.selected_village)
                 btn_type = "primary" if is_active else "secondary"
                 label = f"{'📍' if is_active else ''} {v['Village']}"
                 
-                # The Button (Now with unique key using index 'i')
-                unique_key = f"btn_{v['Village']}_{i}" 
+                # The Button (Unique Key fixes Duplicate Error)
+                unique_key = f"btn_{v['Village']}_{i}"
                 if st.button(f"{label}\n\n({v['Reason']})", key=unique_key, type=btn_type, use_container_width=True):
                     st.session_state.selected_village = v['Village']
                     st.rerun()
-    
+
     # --- LEFT COLUMN: THE MAP ---
     with c_map:
         # 1. Initialize Map (Default to OpenStreetMap)
@@ -701,10 +699,10 @@ if uploaded_csv is not None:
             overlay=False,
             control=True
         ).add_to(m)
-
-        # 3. Add Layer Control (To switch between OSM and Hybrid)
+        
         folium.LayerControl().add_to(m)
-        # 1. Boundaries
+
+        # 3. Boundaries
         if geojson_features:
             folium.GeoJson(
                 data={"type": "FeatureCollection", "features": geojson_features},
@@ -712,7 +710,7 @@ if uploaded_csv is not None:
                 tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Region:'])
             ).add_to(m)
 
-        # 2. Markers (SIGHTINGS)
+        # 4. Markers (SIGHTINGS)
         if map_mode == "Heatmap":
             heat_data = [[r['Latitude'], r['Longitude'], max(r['Severity Score'], 1)] for _, r in displayed_map_df.iterrows()]
             HeatMap(heat_data, radius=15, blur=10).add_to(m)
@@ -736,7 +734,7 @@ if uploaded_csv is not None:
                     elif row['Crop Damage']>0: color='orange'
                     elif row['Sighting Type'] == 'Direct': color='blue'
                 
-                # --- NEW TOOLTIP: SIGHTING DETAILS ONLY ---
+                # Tooltip
                 dmg_str = []
                 if row['Crop Damage'] > 0: dmg_str.append('Crop')
                 if row['House Damage'] > 0: dmg_str.append('House')
@@ -758,7 +756,7 @@ if uploaded_csv is not None:
                     tooltip=tooltip
                 ).add_to(m)
 
-       # 3. Affected Villages (RINGS)
+       # 5. Affected Villages (RINGS)
         if village_df is not None:
             villages_to_show = [v for v in risk_villages if v['Village'] == st.session_state.selected_village] if st.session_state.selected_village else risk_villages
             
@@ -779,7 +777,7 @@ if uploaded_csv is not None:
                     tooltip=f"<b>{v['Village']}</b>"
                 ).add_to(m)
 
-        # RENDER MAP
+        # 6. RENDER MAP (CRITICAL LINE)
         st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
    
    # --- G. ANALYTICS CHARTS ---
@@ -899,6 +897,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

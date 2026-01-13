@@ -839,15 +839,15 @@ if uploaded_csv is not None:
    # [Insert this block after the Range Growth Animation in Section G]
 
     st.divider()
-    st.subheader("🏆 Division Comparison: Cumulative Growth")
+    st.subheader("🏆 Division Comparison: Cumulative Reports")
     
     if not df.empty:
         # 1. Data Preparation
-        # Group by Date and Division to get daily counts
+        # Group by Date and Division to get daily counts (Rows = Reports)
         div_daily = df.groupby(['Date', 'Division']).size().reset_index(name='Daily')
         
         # 2. Pivot for Continuity
-        # Create a matrix (Date x Division) to ensure we handle days with 0 entries
+        # Create a matrix (Date x Division) to ensure we handle days with 0 reports
         div_pivot = div_daily.pivot(index='Date', columns='Division', values='Daily').fillna(0)
         
         # 3. Reindex Date Range
@@ -860,25 +860,25 @@ if uploaded_csv is not None:
         
         # 5. Melt back to Long Format for Plotly
         div_long = div_cum.stack().reset_index()
-        div_long.columns = ['Date', 'Division', 'Cumulative Entries']
+        div_long.columns = ['Date', 'Division', 'Cumulative Reports'] # <--- Updated Label
         div_long['Date_Str'] = div_long['Date'].dt.strftime('%Y-%m-%d')
         
         # 6. Generate Animated Bar Chart
         fig_div_anim = px.bar(
             div_long, 
             x="Division", 
-            y="Cumulative Entries", 
+            y="Cumulative Reports", 
             color="Division", 
             animation_frame="Date_Str", 
-            range_y=[0, div_long['Cumulative Entries'].max() * 1.1], # Lock Y-axis
-            title="Cumulative Entry Growth by Division",
-            hover_data=['Cumulative Entries']
+            range_y=[0, div_long['Cumulative Reports'].max() * 1.1], # Lock Y-axis
+            title="Cumulative Reports by Division", # <--- Updated Title
+            hover_data=['Cumulative Reports']
         )
         
         # 7. Animation Settings
         fig_div_anim.update_layout(
             xaxis_title="Forest Division",
-            yaxis_title="Total Entries (Cumulative)",
+            yaxis_title="Total Reports (Cumulative)", # <--- Updated Axis Title
             showlegend=False
         )
         # Set animation speed
@@ -989,6 +989,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

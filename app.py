@@ -836,6 +836,58 @@ if uploaded_csv is not None:
             fig_damage = None
             st.info("No conflicts reported.")
 
+    # [Insert this block after the Conflict Breakdown chart code in Section G]
+
+    st.divider()
+    st.subheader("⏳ Temporal Drill-Down: Division & Range")
+    
+    if not df.empty:
+        # 1. Prepare Data for Animation
+        anim_df = df.copy()
+        # Create a string date column for the slider labels (Sortable YYYY-MM-DD)
+        anim_df['Date_Str'] = anim_df['Date'].dt.strftime('%Y-%m-%d')
+        
+        # 2. Aggregate Data
+        # Count entries grouped by Date, Division, and Range
+        bar_data = anim_df.groupby(['Date_Str', 'Division', 'Range']).size().reset_index(name='Entries')
+        
+        if not bar_data.empty:
+            # 3. Sort Data
+            # Essential for the animation slider to progress chronologically
+            bar_data = bar_data.sort_values('Date_Str')
+            
+            # 4. Calculate Static Y-Axis Range
+            # Prevents the chart axis from jumping/resizing between frames.
+            # We find the max total entries for any Division on any single Day.
+            max_y = bar_data.groupby(['Date_Str', 'Division'])['Entries'].sum().max()
+            
+            # 5. Create Animated Bar Chart
+            fig_anim = px.bar(
+                bar_data, 
+                x="Division", 
+                y="Entries", 
+                color="Range", 
+                animation_frame="Date_Str", 
+                range_y=[0, max_y * 1.2 if max_y > 0 else 10], # Add 20% headroom
+                title="Daily Entries by Division (Stacked by Range)",
+                barmode='stack', # Stack Ranges on top of each other
+                hover_data=['Entries']
+            )
+            
+            # 6. Customize Layout & Animation Speed
+            fig_anim.update_layout(
+                xaxis_title="Forest Division",
+                yaxis_title="Number of Sightings",
+                legend_title="Range"
+            )
+            # Set frame duration to 800ms (slower than default for better readability)
+            fig_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 800
+            
+            # 7. Display Chart
+            st.plotly_chart(fig_anim, width="stretch")
+        else:
+            st.warning("Insufficient data for temporal animation.")
+
     # --- H. DATA TABLES ---
     st.divider()
     t1, t2 = st.tabs(["⚠️ Damage Report", "🏆 Leaderboards"])
@@ -877,6 +929,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

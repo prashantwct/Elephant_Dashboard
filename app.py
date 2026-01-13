@@ -421,6 +421,11 @@ with st.sidebar:
 
 # Main Title
 st.title("🐘 Elephant Sighting & Conflict Command Centre")
+    # [Insert this in the Sidebar, after Map Settings]
+    st.divider()
+    st.header("👥 User Registry")
+    uploaded_users = st.file_uploader("Upload Staff List (CSV)", type=['csv'], key="user_upload")
+
 
 # ==========================================
 # 6. DATA LOADING
@@ -989,6 +994,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

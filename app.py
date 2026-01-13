@@ -392,10 +392,6 @@ def generate_full_html_report(df, map_object, fig_trend, fig_demog, fig_hourly, 
 # 5. SIDEBAR & SESSION STATE
 # ==========================================
 
-# ==========================================
-# 5. SIDEBAR & SESSION STATE
-# ==========================================
-
 # Initialize Session State Variables
 if 'map_filter' not in st.session_state:
     st.session_state.map_filter = 'All'
@@ -410,8 +406,7 @@ with st.sidebar:
     st.markdown("---")
     st.info("© **Wildlife Conservation Trust, Mumbai**\n\nDeveloped for MP Forest Department Elephant Monitoring.")
 
-    # --- NEW: RISK PARAMETERS SLIDERS ---
-    # These variables will be used later in the map section
+    # --- RISK PARAMETERS SLIDERS ---
     st.divider()
     st.subheader("🏘️ Risk Parameters")
     with st.expander("Configure Logic", expanded=True):
@@ -419,13 +414,13 @@ with st.sidebar:
         p_pres_rad = st.slider("Presence Radius (km)", 1.0, 10.0, 5.0, 0.5, key="slider_pres", help="Alert village if elephant present within this distance.")
         p_days = st.slider("Consecutive Days", 1, 7, 3, key="slider_days", help="Number of consecutive days required for presence alert.")
 
-# Main Title
-st.title("🐘 Elephant Sighting & Conflict Command Centre")
-    # [Insert this in the Sidebar, after Map Settings]
+    # --- NEW: USER REGISTRY (Inside Sidebar) ---
     st.divider()
     st.header("👥 User Registry")
     uploaded_users = st.file_uploader("Upload Staff List (CSV)", type=['csv'], key="user_upload")
 
+# Main Title (Outside Sidebar)
+st.title("🐘 Elephant Sighting & Conflict Command Centre")
 
 # ==========================================
 # 6. DATA LOADING
@@ -994,6 +989,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

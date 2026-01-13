@@ -836,6 +836,55 @@ if uploaded_csv is not None:
             fig_damage = None
             st.info("No conflicts reported.")
 
+   # [Insert this block after the Range Growth Animation in Section G]
+
+    st.divider()
+    st.subheader("🏆 Division Comparison: Cumulative Growth")
+    
+    if not df.empty:
+        # 1. Data Preparation
+        # Group by Date and Division to get daily counts
+        div_daily = df.groupby(['Date', 'Division']).size().reset_index(name='Daily')
+        
+        # 2. Pivot for Continuity
+        # Create a matrix (Date x Division) to ensure we handle days with 0 entries
+        div_pivot = div_daily.pivot(index='Date', columns='Division', values='Daily').fillna(0)
+        
+        # 3. Reindex Date Range
+        # Fill in missing dates to make the animation smooth
+        all_dates = pd.date_range(start=div_pivot.index.min(), end=div_pivot.index.max())
+        div_pivot = div_pivot.reindex(all_dates, fill_value=0)
+        
+        # 4. Calculate Cumulative Sum
+        div_cum = div_pivot.cumsum()
+        
+        # 5. Melt back to Long Format for Plotly
+        div_long = div_cum.stack().reset_index()
+        div_long.columns = ['Date', 'Division', 'Cumulative Entries']
+        div_long['Date_Str'] = div_long['Date'].dt.strftime('%Y-%m-%d')
+        
+        # 6. Generate Animated Bar Chart
+        fig_div_anim = px.bar(
+            div_long, 
+            x="Division", 
+            y="Cumulative Entries", 
+            color="Division", 
+            animation_frame="Date_Str", 
+            range_y=[0, div_long['Cumulative Entries'].max() * 1.1], # Lock Y-axis
+            title="Cumulative Entry Growth by Division",
+            hover_data=['Cumulative Entries']
+        )
+        
+        # 7. Animation Settings
+        fig_div_anim.update_layout(
+            xaxis_title="Forest Division",
+            yaxis_title="Total Entries (Cumulative)",
+            showlegend=False
+        )
+        # Set animation speed
+        fig_div_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 100
+        
+        st.plotly_chart(fig_div_anim, width="stretch")
     # [Insert this block after the Conflict Breakdown chart in Section G]
 
     st.divider()
@@ -940,6 +989,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

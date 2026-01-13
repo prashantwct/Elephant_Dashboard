@@ -839,42 +839,66 @@ if uploaded_csv is not None:
     # [Insert this block after the Conflict Breakdown chart in Section G]
 
     st.divider()
-    st.subheader("📈 Cumulative Trends (By Division)")
+    st.subheader("⏳ Temporal Dynamics: Range Growth Animation")
     
     if not df.empty:
-        # 1. Aggregate Daily Counts by Division
-        # Group by Date and Division (ignoring Range as requested)
-        trend_df = df.groupby(['Date', 'Division']).size().reset_index(name='Daily Count')
+        # 1. Division Filter
+        # Create list of divisions, ensuring 'All' is not included if strictly filtering
+        div_options = sorted(list(df['Division'].unique()))
+        selected_div_anim = st.selectbox("Select Division to Visualize:", div_options, key="anim_div_filter")
         
-        # 2. Sort & Calculate Cumulative Sum
-        trend_df = trend_df.sort_values('Date')
-        trend_df['Cumulative Entries'] = trend_df.groupby('Division')['Daily Count'].cumsum()
+        # 2. Filter Data
+        subset = df[df['Division'] == selected_div_anim].copy()
         
-        # 3. Generate Line Chart
-        fig_cum = px.line(
-            trend_df,
-            x="Date",
-            y="Cumulative Entries",
-            color="Division",
-            markers=True,
-            title="Growth of Entries Over Time (Cumulative)",
-            labels={"Date": "Date", "Cumulative Entries": "Total Sightings to Date"}
-        )
-        
-        # 4. Add Time Slider (Range Slider) & Selector Buttons
-        fig_cum.update_xaxes(
-            rangeslider_visible=True,
-            rangeselector=dict(
-                buttons=list([
-                    dict(count=7, label="1w", step="day", stepmode="backward"),
-                    dict(count=1, label="1m", step="month", stepmode="backward"),
-                    dict(count=3, label="3m", step="month", stepmode="backward"),
-                    dict(step="all")
-                ])
+        if not subset.empty:
+            # 3. Data Preparation for Smooth Animation
+            # We need a continuous timeline so bars don't jump.
+            
+            # A. Group by Day and Range to get daily counts
+            daily_counts = subset.groupby(['Date', 'Range']).size().reset_index(name='Daily')
+            
+            # B. Pivot to create a matrix (Date x Range)
+            # This ensures we have a column for every Range and index for every Date
+            pivoted = daily_counts.pivot(index='Date', columns='Range', values='Daily').fillna(0)
+            
+            # C. Reindex to fill in missing days (optional, makes animation smoother)
+            full_date_range = pd.date_range(start=pivoted.index.min(), end=pivoted.index.max())
+            pivoted = pivoted.reindex(full_date_range, fill_value=0)
+            
+            # D. Calculate Cumulative Sum
+            cum_pivoted = pivoted.cumsum()
+            
+            # E. Melt back to "Long" format for Plotly
+            cum_long = cum_pivoted.stack().reset_index()
+            cum_long.columns = ['Date', 'Range', 'Cumulative Entries']
+            
+            # F. Create String Date for Animation Slider
+            cum_long['Date_Str'] = cum_long['Date'].dt.strftime('%Y-%m-%d')
+            
+            # 4. Generate Animated Bar Chart
+            fig_anim = px.bar(
+                cum_long, 
+                x="Range", 
+                y="Cumulative Entries", 
+                color="Range", 
+                animation_frame="Date_Str", 
+                range_y=[0, cum_long['Cumulative Entries'].max() * 1.1], # Lock Y-axis
+                title=f"Cumulative Entry Growth by Range ({selected_div_anim})",
+                hover_data=['Cumulative Entries']
             )
-        )
-        
-        st.plotly_chart(fig_cum, width="stretch")
+            
+            # 5. Animation Settings
+            fig_anim.update_layout(
+                xaxis_title="Forest Range",
+                yaxis_title="Total Entries (Cumulative)",
+                showlegend=False
+            )
+            # Adjust speed (Frame duration in ms)
+            fig_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 100
+            
+            st.plotly_chart(fig_anim, width="stretch")
+        else:
+            st.warning(f"No data available for Division: {selected_div_anim}")
     # --- H. DATA TABLES ---
     st.divider()
     t1, t2 = st.tabs(["⚠️ Damage Report", "🏆 Leaderboards"])
@@ -916,6 +940,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

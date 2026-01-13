@@ -836,58 +836,45 @@ if uploaded_csv is not None:
             fig_damage = None
             st.info("No conflicts reported.")
 
-    # [Insert this block after the Conflict Breakdown chart code in Section G]
+    # [Insert this block after the Conflict Breakdown chart in Section G]
 
     st.divider()
-    st.subheader("⏳ Temporal Drill-Down: Division & Range")
+    st.subheader("📈 Cumulative Trends (By Division)")
     
     if not df.empty:
-        # 1. Prepare Data for Animation
-        anim_df = df.copy()
-        # Create a string date column for the slider labels (Sortable YYYY-MM-DD)
-        anim_df['Date_Str'] = anim_df['Date'].dt.strftime('%Y-%m-%d')
+        # 1. Aggregate Daily Counts by Division
+        # Group by Date and Division (ignoring Range as requested)
+        trend_df = df.groupby(['Date', 'Division']).size().reset_index(name='Daily Count')
         
-        # 2. Aggregate Data
-        # Count entries grouped by Date, Division, and Range
-        bar_data = anim_df.groupby(['Date_Str', 'Division', 'Range']).size().reset_index(name='Entries')
+        # 2. Sort & Calculate Cumulative Sum
+        trend_df = trend_df.sort_values('Date')
+        trend_df['Cumulative Entries'] = trend_df.groupby('Division')['Daily Count'].cumsum()
         
-        if not bar_data.empty:
-            # 3. Sort Data
-            # Essential for the animation slider to progress chronologically
-            bar_data = bar_data.sort_values('Date_Str')
-            
-            # 4. Calculate Static Y-Axis Range
-            # Prevents the chart axis from jumping/resizing between frames.
-            # We find the max total entries for any Division on any single Day.
-            max_y = bar_data.groupby(['Date_Str', 'Division'])['Entries'].sum().max()
-            
-            # 5. Create Animated Bar Chart
-            fig_anim = px.bar(
-                bar_data, 
-                x="Division", 
-                y="Entries", 
-                color="Range", 
-                animation_frame="Date_Str", 
-                range_y=[0, max_y * 1.2 if max_y > 0 else 10], # Add 20% headroom
-                title="Daily Entries by Division (Stacked by Range)",
-                barmode='stack', # Stack Ranges on top of each other
-                hover_data=['Entries']
+        # 3. Generate Line Chart
+        fig_cum = px.line(
+            trend_df,
+            x="Date",
+            y="Cumulative Entries",
+            color="Division",
+            markers=True,
+            title="Growth of Entries Over Time (Cumulative)",
+            labels={"Date": "Date", "Cumulative Entries": "Total Sightings to Date"}
+        )
+        
+        # 4. Add Time Slider (Range Slider) & Selector Buttons
+        fig_cum.update_xaxes(
+            rangeslider_visible=True,
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=7, label="1w", step="day", stepmode="backward"),
+                    dict(count=1, label="1m", step="month", stepmode="backward"),
+                    dict(count=3, label="3m", step="month", stepmode="backward"),
+                    dict(step="all")
+                ])
             )
-            
-            # 6. Customize Layout & Animation Speed
-            fig_anim.update_layout(
-                xaxis_title="Forest Division",
-                yaxis_title="Number of Sightings",
-                legend_title="Range"
-            )
-            # Set frame duration to 800ms (slower than default for better readability)
-            fig_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 800
-            
-            # 7. Display Chart
-            st.plotly_chart(fig_anim, width="stretch")
-        else:
-            st.warning("Insufficient data for temporal animation.")
-
+        )
+        
+        st.plotly_chart(fig_cum, width="stretch")
     # --- H. DATA TABLES ---
     st.divider()
     t1, t2 = st.tabs(["⚠️ Damage Report", "🏆 Leaderboards"])
@@ -929,6 +916,7 @@ if uploaded_csv is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

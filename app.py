@@ -987,8 +987,101 @@ if uploaded_csv is not None:
             mime="text/html"
         )
 
+    # ==========================================
+# J. USER REGISTRY ANALYTICS (New Section)
+# ==========================================
+
+if uploaded_users is not None:
+    st.markdown("---")
+    st.title("👥 Gaj Rakshak Staff Analytics")
+    
+    # 1. Load & Clean Data
+    try:
+        u_df = pd.read_csv(uploaded_users)
+    except UnicodeDecodeError:
+        uploaded_users.seek(0)
+        u_df = pd.read_csv(uploaded_users, encoding='ISO-8859-1')
+        
+    # Standardize Columns
+    u_df.columns = [c.strip() for c in u_df.columns]
+    
+    if {'Division', 'Post'}.issubset(u_df.columns):
+        # Clean Data
+        u_df['Division'] = u_df['Division'].astype(str).str.title().str.strip()
+        u_df['Post'] = u_df['Post'].astype(str).str.title().str.strip()
+        if 'Range' in u_df.columns:
+            u_df['Range'] = u_df['Range'].astype(str).str.title().str.strip()
+
+        # 2. Metrics
+        total_users = len(u_df)
+        unique_divs = u_df['Division'].nunique()
+        unique_posts = u_df['Post'].nunique()
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Registered Staff", total_users)
+        c2.metric("Active Divisions", unique_divs)
+        c3.metric("Designation Categories", unique_posts)
+        
+        # 3. Visualizations
+        st.subheader("📊 Staff Distribution")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Chart A: Users by Division (Colored by Post)
+            st.markdown("**Staff Strength by Division**")
+            fig_users_div = px.histogram(
+                u_df, 
+                x="Division", 
+                color="Post", 
+                title="Staff Count by Division & Designation",
+                text_auto=True,
+                barmode='stack'
+            )
+            fig_users_div.update_layout(yaxis_title="Count")
+            st.plotly_chart(fig_users_div, width="stretch")
+            
+        with col2:
+            # Chart B: Designation Breakdown (Pie)
+            st.markdown("**Designation Hierarchy**")
+            post_counts = u_df['Post'].value_counts().reset_index()
+            post_counts.columns = ['Post', 'Count']
+            fig_users_pie = px.pie(
+                post_counts, 
+                values='Count', 
+                names='Post', 
+                hole=0.4,
+                title="Overall Designation Split"
+            )
+            st.plotly_chart(fig_users_pie, width="stretch")
+
+        # 4. Sunburst Drill-Down (Division -> Range -> Post)
+        if 'Range' in u_df.columns:
+            st.subheader("🔍 Hierarchy Drill-Down")
+            st.markdown("Visualizing **Division ➔ Range ➔ Post** distribution.")
+            
+            # Group for clean tree structure
+            tree_df = u_df.fillna('Unknown').groupby(['Division', 'Range', 'Post']).size().reset_index(name='Count')
+            
+            fig_tree = px.sunburst(
+                tree_df,
+                path=['Division', 'Range', 'Post'],
+                values='Count',
+                height=700,
+                title="Staff Deployment Hierarchy"
+            )
+            st.plotly_chart(fig_tree, width="stretch")
+            
+        # 5. Data Table
+        with st.expander("📄 View Full Staff List"):
+            st.dataframe(u_df, use_container_width=True)
+            
+    else:
+        st.error("CSV must contain 'Division' and 'Post' columns.")
+
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

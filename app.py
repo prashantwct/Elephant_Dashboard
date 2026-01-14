@@ -465,11 +465,25 @@ if uploaded_csv is not None:
         df_raw['Hour'] = 0 
         
     df_raw = df_raw.dropna(subset=['Date'])
+
+    # --- NEW: DUPLICATE REMOVAL ---
+    # Removes entries where Date, Beat, Reporter, and Total Count are identical
+    initial_len = len(df_raw)
+    df_raw = df_raw.drop_duplicates(subset=['Date', 'Beat', 'Created By', 'Total Count'])
+    if len(df_raw) < initial_len:
+        st.sidebar.warning(f"🧹 Removed {initial_len - len(df_raw)} duplicate entries.")
     
     # Numeric Cleanup
     cols = ['Total Count', 'Male Count', 'Female Count', 'Calf Count', 'Crop Damage', 'House Damage', 'Injury']
     for c in cols:
         if c in df_raw.columns: df_raw[c] = pd.to_numeric(df_raw[c], errors='coerce').fillna(0)
+
+    # --- NEW: CALCULATE UNKNOWN DEMOGRAPHICS ---
+    # Unknown = Total - (Males + Females + Calves)
+    classified_sum = df_raw['Male Count'] + df_raw['Female Count'] + df_raw['Calf Count']
+    df_raw['Unknown Count'] = df_raw['Total Count'] - classified_sum
+    # Ensure no negative numbers (clip to 0)
+    df_raw['Unknown Count'] = df_raw['Unknown Count'].clip(lower=0)
 
     # Text Normalization
     for c in ['Range', 'Beat', 'Division']:
@@ -696,7 +710,14 @@ if uploaded_csv is not None:
 
         # 4. Markers
         if map_mode == "Heatmap":
-            heat_data = [[r['Latitude'], r['Longitude'], max(r['Severity Score'], 1)] for _, r in displayed_map_df.iterrows()]
+            # Weight Multiplier: Direct = 1.0, Indirect = 0.5
+            heat_data = []
+            for _, r in displayed_map_df.iterrows():
+                weight = max(r['Severity Score'], 1)
+                if r['Sighting Type'] == 'Indirect':
+                    weight *= 0.5  # Decay for indirect signs
+                heat_data.append([r['Latitude'], r['Longitude'], weight])
+                
             HeatMap(heat_data, radius=15, blur=10).add_to(m)
         else:
             for _, row in displayed_map_df.iterrows():
@@ -813,10 +834,20 @@ if uploaded_csv is not None:
         st.plotly_chart(fig_trend, width="stretch")
     with c2:
         st.subheader("Demographics")
-        demog = df[['Male Count', 'Female Count', 'Calf Count']].sum().reset_index()
+        # Included 'Unknown Count' in the summation
+        demog = df[['Male Count', 'Female Count', 'Calf Count', 'Unknown Count']].sum().reset_index()
         demog.columns = ['Type', 'Count']
-        fig_demog = px.pie(demog, values='Count', names='Type', hole=0.4)
-        # UPDATED: Replaced use_container_width with width="stretch"
+        # Filter out zero counts to keep the chart clean
+        demog = demog[demog['Count'] > 0]
+        
+        fig_demog = px.pie(demog, values='Count', names='Type', hole=0.4,
+                           color='Type',
+                           color_discrete_map={
+                               'Male Count': '#1f77b4',   # Blue
+                               'Female Count': '#e377c2', # Pink
+                               'Calf Count': '#2ca02c',   # Green
+                               'Unknown Count': '#7f7f7f' # Grey
+                           })
         st.plotly_chart(fig_demog, width="stretch")
 
     # Conflict Breakdown
@@ -1081,6 +1112,7 @@ if uploaded_users is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

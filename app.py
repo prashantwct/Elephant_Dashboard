@@ -546,11 +546,17 @@ if uploaded_csv is not None:
         st.header("Map Settings")
         map_mode = st.radio("Visualization Mode:", ["Pins", "Heatmap"], horizontal=True)
 
-    # --- D. OPERATIONAL METRICS (Row 1) ---
+# --- D. OPERATIONAL METRICS (Row 1) ---
     n_sightings = len(df)
     n_cumulative = int(df['Total Count'].sum())
     n_direct = len(df[df['Sighting Type'] == 'Direct'])
-    n_conflicts = ((df['Crop Damage']>0) | (df['House Damage']>0) | (df['Injury']>0)).sum()
+    
+    # UPDATED: Conflict calculated as SUM of specific damage types (Crop + House + Human Injury)
+    n_conflicts = int(df['Crop Damage'].sum() + df['House Damage'].sum() + df['Injury'].sum())
+    
+    # Helper for HEC Ratio (counts rows with >0 conflict, ensuring Ratio % is correct)
+    n_conflict_events = ((df['Crop Damage']>0) | (df['House Damage']>0) | (df['Injury']>0)).sum()
+
     n_males = int(df['Male Count'].sum())
     n_calves = int(df['Calf Count'].sum())
 
@@ -575,8 +581,9 @@ if uploaded_csv is not None:
     if k1.button(f"🚨 Severity Score\n\n{curr_sev:.1f} ({'+' if delta_sev>0 else ''}{delta_sev:.1f})", width="stretch"):
         st.session_state.map_filter = 'Severity_View'
     
-    # 2. HEC Ratio
-    curr_hec = (n_conflicts / n_sightings * 100) if n_sightings > 0 else 0
+    # 2. HEC Ratio (Uses event count to keep percentage accurate)
+    curr_hec = (n_conflict_events / n_sightings * 100) if n_sightings > 0 else 0
+    
     prev_conf = ((df_prev['Crop Damage']>0)|(df_prev['House Damage']>0)|(df_prev['Injury']>0)).sum()
     prev_sight = len(df_prev)
     prev_hec = (prev_conf / prev_sight * 100) if prev_sight > 0 else 0
@@ -605,6 +612,15 @@ if uploaded_csv is not None:
     
     if k4.button(f"🔁 Hotspot: {top_beat}\n\n(Click to Focus)", width="stretch"):
         st.session_state.map_filter = 'Hotspot_View'
+   
+    # Explanation Panel
+    explanation = ""
+    if st.session_state.map_filter == 'Severity_View': explanation = "🔴 **Viewing Severity:** Markers sized by Severity Score."
+    elif st.session_state.map_filter == 'Night_View': explanation = "🟣 **Viewing Night Activity:** Sightings between 6PM and 6AM."
+    elif st.session_state.map_filter == 'Hotspot_View': explanation = f"🎯 **Viewing Hotspot:** Focusing on **{top_beat}** (Highest Severity)."
+    elif st.session_state.map_filter == 'Conflict': explanation = "🔥 **Viewing Conflicts:** Crop, House, or Injury incidents."
+    else: explanation = "📍 **Viewing All Data:** Showing all records."
+    st.info(explanation)
    
     # Explanation Panel
     explanation = ""
@@ -1134,6 +1150,7 @@ if uploaded_users is not None:
 
 else:
     st.info("👆 Upload CSV to begin.")
+
 
 
 

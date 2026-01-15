@@ -631,549 +631,474 @@ if uploaded_csv is not None:
     else: explanation = "📍 **Viewing All Data:** Showing all records."
     st.info(explanation)
 
-# --- F. MAP VISUALIZATION (Reactive, Hybrid & Interactive) ---
-    
-    # 1. Initialize Selection State
-    if 'selected_village' not in st.session_state:
-        st.session_state.selected_village = None
-
-    # 2. PREPARE BASE MAP DATA
-    map_df = df.copy()
-    
-    if st.session_state.map_filter == 'Conflict':
-        map_df = map_df[(map_df['Crop Damage']>0)|(map_df['House Damage']>0)|(map_df['Injury']>0)]
-    elif st.session_state.map_filter == 'Night_View':
-        map_df = map_df[map_df['Is_Night'] == 1]
-    elif st.session_state.map_filter == 'Hotspot_View' and st.session_state.hotspot_beat:
-        map_df = map_df[map_df['Beat'] == st.session_state.hotspot_beat]
-    elif st.session_state.map_filter == 'Direct':
-        map_df = map_df[map_df['Sighting Type'] == 'Direct']
-    elif st.session_state.map_filter == 'Males':
-        map_df = map_df[map_df['Male Count'] > 0]
-    elif st.session_state.map_filter == 'Calves':
-        map_df = map_df[map_df['Calf Count'] > 0]
-
-    # 3. Calculate Risk Villages
-    risk_villages = []
-    if village_df is not None:
-        risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
-
-    # 4. Handle Selection & Zoom Logic
-    displayed_map_df = map_df.copy()
-    
-    # Default View
-    map_center = [23.5, 80.5]
-    map_zoom = 9
-    
-    if st.session_state.selected_village and village_df is not None:
-        sel_v = next((v for v in risk_villages if v['Village'] == st.session_state.selected_village), None)
-        if sel_v:
-            map_center = [sel_v['Lat'], sel_v['Lon']]
-            map_zoom = 13
-            search_rad = max(p_dmg_rad, p_pres_rad)
-            v_lons = sel_v['Lon']
-            v_lats = sel_v['Lat']
-            s_lons = displayed_map_df['Longitude'].values
-            s_lats = displayed_map_df['Latitude'].values
-            if len(s_lons) > 0:
-                dists = haversine_np(v_lons, v_lats, s_lons, s_lats)
-                displayed_map_df = displayed_map_df[dists <= search_rad]
-
-    # 5. Create Layout
-    c_map, c_list = st.columns([3, 1])
-    
-    # --- RIGHT COLUMN: LIST ---
-    with c_list:
-        st.subheader("🚨 Affected Villages")
-        if st.button("🌍 Show Full Map", type="secondary", use_container_width=True):
-            st.session_state.selected_village = None
-            st.rerun()
-        st.markdown("---")
-        
-        if not risk_villages:
-            st.info("No villages at risk.")
-        else:
-            for i, v in enumerate(risk_villages):
-                is_active = (v['Village'] == st.session_state.selected_village)
-                btn_type = "primary" if is_active else "secondary"
-                label = f"{'📍' if is_active else ''} {v['Village']}"
-                # Unique key prevents duplicate error
-                if st.button(f"{label}\n\n({v['Reason']})", key=f"btn_{v['Village']}_{i}", type=btn_type, use_container_width=True):
-                    st.session_state.selected_village = v['Village']
-                    st.rerun()
-
-    # --- LEFT COLUMN: MAP ---
-    with c_map:
-        # 1. Initialize Map
-        m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="OpenStreetMap")
-
-        # 2. Add Google Hybrid (Optional Toggle)
-        folium.TileLayer(
-            tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
-            attr='Google',
-            name='Google Hybrid',
-            overlay=False,
-            control=True
-        ).add_to(m)
-
-        # 3. GeoJSON Boundaries
-        if geojson_features:
-            folium.GeoJson(
-                data={"type": "FeatureCollection", "features": geojson_features},
-                style_function=lambda x: {'fillColor': '#3388ff', 'color': '#3388ff', 'weight': 1, 'fillOpacity': 0.1},
-                tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Region:'])
-            ).add_to(m)
-
-        # 4. Markers
-        if map_mode == "Heatmap":
-            # Weight Multiplier: Direct = 1.0, Indirect = 0.5
-            heat_data = []
-            for _, r in displayed_map_df.iterrows():
-                weight = max(r['Severity Score'], 1)
-                if r['Sighting Type'] == 'Indirect':
-                    weight *= 0.5  # Decay for indirect signs
-                heat_data.append([r['Latitude'], r['Longitude'], weight])
-                
-            HeatMap(heat_data, radius=15, blur=10).add_to(m)
-        else:
-            for _, row in displayed_map_df.iterrows():
-                color = 'green'
-                radius = 4
-                if st.session_state.map_filter == 'Severity_View':
-                    s = row['Severity Score']
-                    if s >= 20: color='darkred'; radius=15
-                    elif s >= 5: color='red'; radius=10
-                    elif s >= 2.5: color='orange'; radius=7
-                    else: color='blue'; radius=4
-                elif st.session_state.map_filter == 'Night_View':
-                    color='purple'; radius=6
-                else:
-                    if row['Injury']>0: color='darkred'
-                    elif row['House Damage']>0: color='red'
-                    elif row['Crop Damage']>0: color='orange'
-                    elif row['Sighting Type'] == 'Direct': color='blue'
-                
-                dmg_str = []
-                if row['Crop Damage'] > 0: dmg_str.append('Crop')
-                if row['House Damage'] > 0: dmg_str.append('House')
-                if row['Injury'] > 0: dmg_str.append('Injury')
-                dmg_txt = ", ".join(dmg_str) if dmg_str else "None"
-
-                tooltip = f"""
-                <div style='font-family:sans-serif; font-size:12px;'>
-                    <b>📅 {row['Date'].date()}</b> | 🕒 {row['Time'] if pd.notnull(row['Time']) else '???'}<br>
-                    <b>📍 Location:</b> {row['Beat']}<br>
-                    <b>🐘 Herd:</b> M:{int(row['Male Count'])} | F:{int(row['Female Count'])} | C:{int(row['Calf Count'])}<br>
-                    <b>⚠️ Damage:</b> {dmg_txt}
-                </div>
-                """
-                
-                folium.CircleMarker(
-                    [row['Latitude'], row['Longitude']],
-                    radius=radius, color=color, fill=True, fill_color=color, fill_opacity=0.7,
-                    tooltip=tooltip
-                ).add_to(m)
-
-        # 5. Risk Rings
-        if village_df is not None:
-            villages_to_show = [v for v in risk_villages if v['Village'] == st.session_state.selected_village] if st.session_state.selected_village else risk_villages
-            for v in villages_to_show:
-                folium.Circle(
-                    location=[v['Lat'], v['Lon']],
-                    radius=v['Radius'],
-                    color=v['Color'],
-                    weight=3 if st.session_state.selected_village else 2,
-                    fill=True, fill_opacity=0.15,
-                    tooltip=f"<b>{v['Village']}</b><br>{v['Reason']}"
-                ).add_to(m)
-                folium.Marker(
-                    location=[v['Lat'], v['Lon']],
-                    icon=folium.Icon(color="red" if v['Color']=='red' else "orange", icon="home", prefix="fa"),
-                    tooltip=f"<b>{v['Village']}</b>"
-                ).add_to(m)
-        
-        # 6. Add Layer Control
-        folium.LayerControl().add_to(m)
-
-        # 7. RENDER COMMAND (Crucial: Must be indented inside 'with c_map:', NOT inside 'if')
-        st_data = st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
-   # --- G. ANALYTICS CHARTS ---
+# ==========================================
+    # TABS CONFIGURATION
+    # ==========================================
     st.divider()
-    r1c1, r1c2 = st.columns(2)
-    
-    with r1c1:
-        st.subheader("Hierarchy Drill-Down")
-        if not df.empty:
-            sb_df = df.copy()
-            sb_val = 'Total Count'
-            sb_title = "Sighting Distribution"
-            
-            # Dynamic Context for Sunburst
-            if st.session_state.map_filter == 'Conflict': 
-                sb_df = sb_df[(sb_df['Crop Damage']>0)|(sb_df['House Damage']>0)|(sb_df['Injury']>0)]
-                sb_df['Incidents'] = 1; sb_val = 'Incidents'
-                sb_title = "Conflict Hierarchy"
-            elif st.session_state.map_filter == 'Direct': 
-                sb_df = sb_df[sb_df['Sighting Type'] == 'Direct']
-                sb_title = "Direct Sightings"
-            elif st.session_state.map_filter == 'Males': 
-                sb_df = sb_df[sb_df['Male Count'] > 0]
-                sb_val = 'Male Count'
-                sb_title = "Male Population"
-                
-            if not sb_df.empty:
-                fig_sun = px.sunburst(sb_df, path=['Division', 'Range', 'Beat'], values=sb_val, title=sb_title)
-                # UPDATED: Replaced use_container_width with width="stretch"
-                st.plotly_chart(fig_sun, width="stretch")
-            else:
-                fig_sun = None
-                st.info("No data available for this view.")
-        else:
-            st.info("No data available.")
-
-    with r1c2:
-        st.subheader("Hourly Activity (0-24h)")
-        if not df.empty:
-            h_counts = df['Hour'].value_counts().reindex(range(24), fill_value=0).reset_index()
-            fig_hourly = px.bar(h_counts, x='Hour', y='count', title="Activity Peaks", 
-                                color='count', color_continuous_scale='Viridis')
-            # UPDATED: Replaced use_container_width with width="stretch"
-            st.plotly_chart(fig_hourly, width="stretch")
-        else: fig_hourly = None
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Trend Analysis")
-        daily = df.groupby('Date').size().reset_index(name='Count')
-        fig_trend = px.line(daily, x='Date', y='Count', markers=True)
-        # UPDATED: Replaced use_container_width with width="stretch"
-        st.plotly_chart(fig_trend, width="stretch")
-    with c2:
-        st.subheader("Demographics")
-        # Included 'Unknown Count' in the summation
-        demog = df[['Male Count', 'Female Count', 'Calf Count', 'Unknown Count']].sum().reset_index()
-        demog.columns = ['Type', 'Count']
-        # Filter out zero counts to keep the chart clean
-        demog = demog[demog['Count'] > 0]
-        
-        fig_demog = px.pie(demog, values='Count', names='Type', hole=0.4,
-                           color='Type',
-                           color_discrete_map={
-                               'Male Count': '#1f77b4',   # Blue
-                               'Female Count': '#e377c2', # Pink
-                               'Calf Count': '#2ca02c',   # Green
-                               'Unknown Count': '#7f7f7f' # Grey
-                           })
-        st.plotly_chart(fig_demog, width="stretch")
-
-    # Conflict Breakdown
-    c4 = st.columns(1)[0]
-    with c4:
-        st.subheader("Conflict Type Breakdown")
-        damage_sums = df[['Crop Damage', 'House Damage', 'Injury']].apply(lambda x: (x > 0).sum()).reset_index()
-        damage_sums.columns = ['Damage Type', 'Incidents']
-        damage_sums = damage_sums[damage_sums['Incidents'] > 0]
-        if not damage_sums.empty:
-            fig_damage = px.pie(damage_sums, values='Incidents', names='Damage Type', 
-                                color='Damage Type', 
-                                color_discrete_map={'Crop Damage':'orange', 'House Damage':'red', 'Injury':'darkred'})
-            # UPDATED: Replaced use_container_width with width="stretch"
-            st.plotly_chart(fig_damage, width="stretch")
-        else:
-            fig_damage = None
-            st.info("No conflicts reported.")
-
-   # [Insert this block after the Range Growth Animation in Section G]
-
-    st.divider()
-    st.subheader("🏆 Division Comparison: Cumulative Reports")
-    
-    if not df.empty:
-        # 1. Data Preparation
-        # Group by Date and Division to get daily counts (Rows = Reports)
-        div_daily = df.groupby(['Date', 'Division']).size().reset_index(name='Daily')
-        
-        # 2. Pivot for Continuity
-        # Create a matrix (Date x Division) to ensure we handle days with 0 reports
-        div_pivot = div_daily.pivot(index='Date', columns='Division', values='Daily').fillna(0)
-        
-        # 3. Reindex Date Range
-        # Fill in missing dates to make the animation smooth
-        all_dates = pd.date_range(start=div_pivot.index.min(), end=div_pivot.index.max())
-        div_pivot = div_pivot.reindex(all_dates, fill_value=0)
-        
-        # 4. Calculate Cumulative Sum
-        div_cum = div_pivot.cumsum()
-        
-        # 5. Melt back to Long Format for Plotly
-        div_long = div_cum.stack().reset_index()
-        div_long.columns = ['Date', 'Division', 'Cumulative Reports'] # <--- Updated Label
-        div_long['Date_Str'] = div_long['Date'].dt.strftime('%Y-%m-%d')
-        
-        # 6. Generate Animated Bar Chart
-        fig_div_anim = px.bar(
-            div_long, 
-            x="Division", 
-            y="Cumulative Reports", 
-            color="Division", 
-            animation_frame="Date_Str", 
-            range_y=[0, div_long['Cumulative Reports'].max() * 1.1], # Lock Y-axis
-            title="Cumulative Reports by Division", # <--- Updated Title
-            hover_data=['Cumulative Reports']
-        )
-        
-        # 7. Animation Settings
-        fig_div_anim.update_layout(
-            xaxis_title="Forest Division",
-            yaxis_title="Total Reports (Cumulative)", # <--- Updated Axis Title
-            showlegend=False
-        )
-        # Set animation speed
-        fig_div_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 100
-        
-        st.plotly_chart(fig_div_anim, width="stretch")
-    # [Insert this block after the Conflict Breakdown chart in Section G]
-
-    st.divider()
-    st.subheader("⏳ Temporal Dynamics: Range Growth Animation")
-    
-    if not df.empty:
-        # 1. Division Filter
-        # Create list of divisions, ensuring 'All' is not included if strictly filtering
-        div_options = sorted(list(df['Division'].unique()))
-        selected_div_anim = st.selectbox("Select Division to Visualize:", div_options, key="anim_div_filter")
-        
-        # 2. Filter Data
-        subset = df[df['Division'] == selected_div_anim].copy()
-        
-        if not subset.empty:
-            # 3. Data Preparation for Smooth Animation
-            # We need a continuous timeline so bars don't jump.
-            
-            # A. Group by Day and Range to get daily counts
-            daily_counts = subset.groupby(['Date', 'Range']).size().reset_index(name='Daily')
-            
-            # B. Pivot to create a matrix (Date x Range)
-            # This ensures we have a column for every Range and index for every Date
-            pivoted = daily_counts.pivot(index='Date', columns='Range', values='Daily').fillna(0)
-            
-            # C. Reindex to fill in missing days (optional, makes animation smoother)
-            full_date_range = pd.date_range(start=pivoted.index.min(), end=pivoted.index.max())
-            pivoted = pivoted.reindex(full_date_range, fill_value=0)
-            
-            # D. Calculate Cumulative Sum
-            cum_pivoted = pivoted.cumsum()
-            
-            # E. Melt back to "Long" format for Plotly
-            cum_long = cum_pivoted.stack().reset_index()
-            cum_long.columns = ['Date', 'Range', 'Cumulative Entries']
-            
-            # F. Create String Date for Animation Slider
-            cum_long['Date_Str'] = cum_long['Date'].dt.strftime('%Y-%m-%d')
-            
-            # 4. Generate Animated Bar Chart
-            fig_anim = px.bar(
-                cum_long, 
-                x="Range", 
-                y="Cumulative Entries", 
-                color="Range", 
-                animation_frame="Date_Str", 
-                range_y=[0, cum_long['Cumulative Entries'].max() * 1.1], # Lock Y-axis
-                title=f"Cumulative Entry Growth by Range ({selected_div_anim})",
-                hover_data=['Cumulative Entries']
-            )
-            
-            # 5. Animation Settings
-            fig_anim.update_layout(
-                xaxis_title="Forest Range",
-                yaxis_title="Total Entries (Cumulative)",
-                showlegend=False
-            )
-            # Adjust speed (Frame duration in ms)
-            fig_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 100
-            
-            st.plotly_chart(fig_anim, width="stretch")
-        else:
-            st.warning(f"No data available for Division: {selected_div_anim}")
-    # --- H. DATA TABLES ---
-    st.divider()
-    t1, t2 = st.tabs(["⚠️ Damage Report", "🏆 Leaderboards"])
-    with t1:
-        dmg = df.groupby(['Division', 'Range']).agg({'Crop Damage': lambda x: (x>0).sum(), 'House Damage': lambda x: (x>0).sum(), 'Injury': lambda x: (x>0).sum()}).reset_index()
-        dmg = dmg[(dmg['Crop Damage']>0)|(dmg['House Damage']>0)|(dmg['Injury']>0)]
-        dmg.columns = ['Division', 'Range', '🌾 Crop', '🏠 House', '🚑 Injury']
-        # UPDATED
-        st.dataframe(dmg.style.background_gradient(cmap="Reds"), width="stretch")
-    with t2:
-        l1, l2 = st.columns(2)
-        with l1:
-            st.markdown("**Top Beats (Activity)**")
-            if 'Beat' in df.columns:
-                # UPDATED
-                st.dataframe(df['Beat'].value_counts().reset_index(name='Entries').head(10), width="stretch", hide_index=True)
-        with l2:
-            st.markdown("**Top Reporters**")
-            if 'Created By' in df.columns:
-                # UPDATED
-                st.dataframe(df['Created By'].value_counts().reset_index(name='Entries').head(10), width="stretch", hide_index=True)
-
-    # --- I. REPORT GENERATION ---
-    st.divider()
-    st.subheader("📄 Report Generation")
-    
-    if st.button("🖨️ Generate Full Report"):
-        # Pass charts only if they exist
-        sun_chart = fig_sun if 'fig_sun' in locals() and fig_sun else None
-        dam_chart = fig_damage if 'fig_damage' in locals() and fig_damage else None
-        
-        html_report = generate_full_html_report(df, m, fig_trend, fig_demog, fig_hourly, dam_chart, sun_chart, start, end)
-        st.download_button(
-            label="📥 Download HTML Report",
-            data=html_report,
-            file_name="Elephant_Monitoring_Report.html",
-            mime="text/html"
-        )
+    tab_map, tab_charts, tab_data, tab_staff = st.tabs(["🗺️ Live Map", "📊 Analytics", "📋 Data & Reports", "👥 Staff Registry"])
 
     # ==========================================
-# ==========================================
-# J. USER REGISTRY ANALYTICS (New Section)
-# ==========================================
+    # F. MAP VISUALIZATION (Inside Tab 1)
+    # ==========================================
+    with tab_map:
+        # 1. Initialize Selection State
+        if 'selected_village' not in st.session_state:
+            st.session_state.selected_village = None
 
-if uploaded_users is not None:
-    st.markdown("---")
-    st.title("👥 Gaj Rakshak Staff Analytics")
-    
-    # 1. Load & Clean Data
-    try:
-        u_df = pd.read_csv(uploaded_users)
-    except UnicodeDecodeError:
-        uploaded_users.seek(0)
-        u_df = pd.read_csv(uploaded_users, encoding='ISO-8859-1')
+        # 2. PREPARE BASE MAP DATA
+        map_df = df.copy()
         
-    # Standardize Columns
-    u_df.columns = [c.strip() for c in u_df.columns]
-    
-    if {'Division', 'Post'}.issubset(u_df.columns):
-        # Clean Data
-        u_df['Division'] = u_df['Division'].astype(str).str.title().str.strip()
-        u_df['Post'] = u_df['Post'].astype(str).str.title().str.strip()
-        if 'Range' in u_df.columns:
-            u_df['Range'] = u_df['Range'].astype(str).str.title().str.strip()
+        if st.session_state.map_filter == 'Conflict':
+            map_df = map_df[(map_df['Crop Damage']>0)|(map_df['House Damage']>0)|(map_df['Injury']>0)]
+        elif st.session_state.map_filter == 'Night_View':
+            map_df = map_df[map_df['Is_Night'] == 1]
+        elif st.session_state.map_filter == 'Hotspot_View' and st.session_state.hotspot_beat:
+            map_df = map_df[map_df['Beat'] == st.session_state.hotspot_beat]
+        elif st.session_state.map_filter == 'Direct':
+            map_df = map_df[map_df['Sighting Type'] == 'Direct']
+        elif st.session_state.map_filter == 'Males':
+            map_df = map_df[map_df['Male Count'] > 0]
+        elif st.session_state.map_filter == 'Calves':
+            map_df = map_df[map_df['Calf Count'] > 0]
 
-        # --- FILTER LOGIC: Exclude Divisions with < 10 Personnel ---
-        div_counts = u_df['Division'].value_counts()
-        valid_divs = div_counts[div_counts >= 10].index
+        # 3. Calculate Risk Villages
+        risk_villages = []
+        if village_df is not None:
+            risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
+
+        # 4. Handle Selection & Zoom Logic
+        displayed_map_df = map_df.copy()
         
-        # Create filtered dataframe for Analytics
-        u_df_viz = u_df[u_df['Division'].isin(valid_divs)].copy()
+        # Default View
+        map_center = [23.5, 80.5]
+        map_zoom = 9
         
-        # Optional: Notify user if data was filtered
-        excluded_count = len(u_df) - len(u_df_viz)
-        if excluded_count > 0:
-            st.info(f"ℹ️ Analytics focused on major divisions. {excluded_count} personnel from divisions with <10 staff are excluded from charts.")
+        if st.session_state.selected_village and village_df is not None:
+            sel_v = next((v for v in risk_villages if v['Village'] == st.session_state.selected_village), None)
+            if sel_v:
+                map_center = [sel_v['Lat'], sel_v['Lon']]
+                map_zoom = 13
+                search_rad = max(p_dmg_rad, p_pres_rad)
+                v_lons = sel_v['Lon']
+                v_lats = sel_v['Lat']
+                s_lons = displayed_map_df['Longitude'].values
+                s_lats = displayed_map_df['Latitude'].values
+                if len(s_lons) > 0:
+                    dists = haversine_np(v_lons, v_lats, s_lons, s_lats)
+                    displayed_map_df = displayed_map_df[dists <= search_rad]
 
-        if not u_df_viz.empty:
-            # 2. Metrics
-            total_users = len(u_df_viz)
-            unique_divs = u_df_viz['Division'].nunique()
-            unique_posts = u_df_viz['Post'].nunique()
+        # 5. Create Layout
+        c_map, c_list = st.columns([3, 1])
+        
+        # --- RIGHT COLUMN: LIST ---
+        with c_list:
+            st.subheader("🚨 Affected Villages")
+            if st.button("🌍 Show Full Map", type="secondary", use_container_width=True):
+                st.session_state.selected_village = None
+                st.rerun()
+            st.markdown("---")
             
-            # Calculate Active Ranges
-            unique_ranges = 0
-            if 'Range' in u_df_viz.columns:
-                unique_ranges = u_df_viz['Range'].nunique()
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Registered Staff", total_users)
-            c2.metric("Active Divisions", unique_divs)
-            c3.metric("Active Ranges", unique_ranges)
-            c4.metric("Designation Categories", unique_posts)
-            
-            # 3. Visualizations
-            st.subheader("📊 Staff Distribution")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Chart A: Users by Division (Colored by Post)
-                st.markdown("**Staff Strength by Division**")
-                fig_users_div = px.histogram(
-                    u_df_viz, 
-                    x="Division", 
-                    color="Post", 
-                    title="Staff Count by Division & Designation",
-                    text_auto=True,
-                    barmode='stack'
-                )
-                fig_users_div.update_layout(yaxis_title="Count")
-                st.plotly_chart(fig_users_div, width="stretch")
-                
-            with col2:
-                # Chart B: Designation Breakdown (Pie)
-                st.markdown("**Designation Hierarchy**")
-                post_counts = u_df_viz['Post'].value_counts().reset_index()
-                post_counts.columns = ['Post', 'Count']
-                fig_users_pie = px.pie(
-                    post_counts, 
-                    values='Count', 
-                    names='Post', 
-                    hole=0.4,
-                    title="Overall Designation Split"
-                )
-                st.plotly_chart(fig_users_pie, width="stretch")
+            if not risk_villages:
+                st.info("No villages at risk.")
+            else:
+                for i, v in enumerate(risk_villages):
+                    is_active = (v['Village'] == st.session_state.selected_village)
+                    btn_type = "primary" if is_active else "secondary"
+                    label = f"{'📍' if is_active else ''} {v['Village']}"
+                    # Unique key prevents duplicate error
+                    if st.button(f"{label}\n\n({v['Reason']})", key=f"btn_{v['Village']}_{i}", type=btn_type, use_container_width=True):
+                        st.session_state.selected_village = v['Village']
+                        st.rerun()
 
-            # 4. Sunburst Drill-Down (Division -> Range -> Post)
-            if 'Range' in u_df_viz.columns:
-                st.subheader("🔍 Hierarchy Drill-Down")
-                st.markdown("Visualizing **Division ➔ Range ➔ Post** distribution.")
+        # --- LEFT COLUMN: MAP ---
+        with c_map:
+            # 1. Initialize Map
+            m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="OpenStreetMap")
+
+            # 2. Add Google Hybrid (Optional Toggle)
+            folium.TileLayer(
+                tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
+                attr='Google',
+                name='Google Hybrid',
+                overlay=False,
+                control=True
+            ).add_to(m)
+
+            # 3. GeoJSON Boundaries
+            if geojson_features:
+                folium.GeoJson(
+                    data={"type": "FeatureCollection", "features": geojson_features},
+                    style_function=lambda x: {'fillColor': '#3388ff', 'color': '#3388ff', 'weight': 1, 'fillOpacity': 0.1},
+                    tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Region:'])
+                ).add_to(m)
+
+            # 4. Markers
+            if map_mode == "Heatmap":
+                # Weight Multiplier: Direct = 1.0, Indirect = 0.5
+                heat_data = []
+                for _, r in displayed_map_df.iterrows():
+                    weight = max(r['Severity Score'], 1)
+                    if r['Sighting Type'] == 'Indirect':
+                        weight *= 0.5  # Decay for indirect signs
+                    heat_data.append([r['Latitude'], r['Longitude'], weight])
+                    
+                HeatMap(heat_data, radius=15, blur=10).add_to(m)
+            else:
+                for _, row in displayed_map_df.iterrows():
+                    color = 'green'
+                    radius = 4
+                    if st.session_state.map_filter == 'Severity_View':
+                        s = row['Severity Score']
+                        if s >= 20: color='darkred'; radius=15
+                        elif s >= 5: color='red'; radius=10
+                        elif s >= 2.5: color='orange'; radius=7
+                        else: color='blue'; radius=4
+                    elif st.session_state.map_filter == 'Night_View':
+                        color='purple'; radius=6
+                    else:
+                        if row['Injury']>0: color='darkred'
+                        elif row['House Damage']>0: color='red'
+                        elif row['Crop Damage']>0: color='orange'
+                        elif row['Sighting Type'] == 'Direct': color='blue'
+                    
+                    dmg_str = []
+                    if row['Crop Damage'] > 0: dmg_str.append('Crop')
+                    if row['House Damage'] > 0: dmg_str.append('House')
+                    if row['Injury'] > 0: dmg_str.append('Injury')
+                    dmg_txt = ", ".join(dmg_str) if dmg_str else "None"
+
+                    tooltip = f"""
+                    <div style='font-family:sans-serif; font-size:12px;'>
+                        <b>📅 {row['Date'].date()}</b> | 🕒 {row['Time'] if pd.notnull(row['Time']) else '???'}<br>
+                        <b>📍 Location:</b> {row['Beat']}<br>
+                        <b>🐘 Herd:</b> M:{int(row['Male Count'])} | F:{int(row['Female Count'])} | C:{int(row['Calf Count'])}<br>
+                        <b>⚠️ Damage:</b> {dmg_txt}
+                    </div>
+                    """
+                    
+                    folium.CircleMarker(
+                        [row['Latitude'], row['Longitude']],
+                        radius=radius, color=color, fill=True, fill_color=color, fill_opacity=0.7,
+                        tooltip=tooltip
+                    ).add_to(m)
+
+            # 5. Risk Rings
+            if village_df is not None:
+                villages_to_show = [v for v in risk_villages if v['Village'] == st.session_state.selected_village] if st.session_state.selected_village else risk_villages
+                for v in villages_to_show:
+                    folium.Circle(
+                        location=[v['Lat'], v['Lon']],
+                        radius=v['Radius'],
+                        color=v['Color'],
+                        weight=3 if st.session_state.selected_village else 2,
+                        fill=True, fill_opacity=0.15,
+                        tooltip=f"<b>{v['Village']}</b><br>{v['Reason']}"
+                    ).add_to(m)
+                    folium.Marker(
+                        location=[v['Lat'], v['Lon']],
+                        icon=folium.Icon(color="red" if v['Color']=='red' else "orange", icon="home", prefix="fa"),
+                        tooltip=f"<b>{v['Village']}</b>"
+                    ).add_to(m)
+            
+            # 6. Add Layer Control
+            folium.LayerControl().add_to(m)
+
+            # 7. RENDER COMMAND
+            st_data = st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
+
+    # ==========================================
+    # G. ANALYTICS CHARTS (Inside Tab 2)
+    # ==========================================
+    with tab_charts:
+        st.subheader("📊 Analytics Dashboard")
+        
+        r1c1, r1c2 = st.columns(2)
+        
+        with r1c1:
+            st.markdown("**Hierarchy Drill-Down**")
+            if not df.empty:
+                sb_df = df.copy()
+                sb_val = 'Total Count'
+                sb_title = "Sighting Distribution"
                 
-                # Group for clean tree structure
-                tree_df = u_df_viz.fillna('Unknown').groupby(['Division', 'Range', 'Post']).size().reset_index(name='Count')
+                # Dynamic Context for Sunburst
+                if st.session_state.map_filter == 'Conflict': 
+                    sb_df = sb_df[(sb_df['Crop Damage']>0)|(sb_df['House Damage']>0)|(sb_df['Injury']>0)]
+                    sb_df['Incidents'] = 1; sb_val = 'Incidents'
+                    sb_title = "Conflict Hierarchy"
+                elif st.session_state.map_filter == 'Direct': 
+                    sb_df = sb_df[sb_df['Sighting Type'] == 'Direct']
+                    sb_title = "Direct Sightings"
+                elif st.session_state.map_filter == 'Males': 
+                    sb_df = sb_df[sb_df['Male Count'] > 0]
+                    sb_val = 'Male Count'
+                    sb_title = "Male Population"
+                    
+                if not sb_df.empty:
+                    fig_sun = px.sunburst(sb_df, path=['Division', 'Range', 'Beat'], values=sb_val, title=sb_title)
+                    st.plotly_chart(fig_sun, width="stretch")
+                else:
+                    fig_sun = None
+                    st.info("No data available for this view.")
+            else:
+                st.info("No data available.")
+
+        with r1c2:
+            st.markdown("**Hourly Activity (0-24h)**")
+            if not df.empty:
+                h_counts = df['Hour'].value_counts().reindex(range(24), fill_value=0).reset_index()
+                fig_hourly = px.bar(h_counts, x='Hour', y='count', title="Activity Peaks", 
+                                    color='count', color_continuous_scale='Viridis')
+                st.plotly_chart(fig_hourly, width="stretch")
+            else: fig_hourly = None
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Trend Analysis**")
+            daily = df.groupby('Date').size().reset_index(name='Count')
+            fig_trend = px.line(daily, x='Date', y='Count', markers=True)
+            st.plotly_chart(fig_trend, width="stretch")
+        with c2:
+            st.markdown("**Demographics**")
+            # Included 'Unknown Count' in the summation
+            demog = df[['Male Count', 'Female Count', 'Calf Count', 'Unknown Count']].sum().reset_index()
+            demog.columns = ['Type', 'Count']
+            # Filter out zero counts
+            demog = demog[demog['Count'] > 0]
+            
+            fig_demog = px.pie(demog, values='Count', names='Type', hole=0.4,
+                               color='Type',
+                               color_discrete_map={
+                                   'Male Count': '#1f77b4',   
+                                   'Female Count': '#e377c2', 
+                                   'Calf Count': '#2ca02c',   
+                                   'Unknown Count': '#7f7f7f' 
+                               })
+            st.plotly_chart(fig_demog, width="stretch")
+
+        # Conflict Breakdown
+        c4 = st.columns(1)[0]
+        with c4:
+            st.markdown("**Conflict Type Breakdown**")
+            damage_sums = df[['Crop Damage', 'House Damage', 'Injury']].apply(lambda x: (x > 0).sum()).reset_index()
+            damage_sums.columns = ['Damage Type', 'Incidents']
+            damage_sums = damage_sums[damage_sums['Incidents'] > 0]
+            if not damage_sums.empty:
+                fig_damage = px.pie(damage_sums, values='Incidents', names='Damage Type', 
+                                    color='Damage Type', 
+                                    color_discrete_map={'Crop Damage':'orange', 'House Damage':'red', 'Injury':'darkred'})
+                st.plotly_chart(fig_damage, width="stretch")
+            else:
+                fig_damage = None
+                st.info("No conflicts reported.")
+
+        st.divider()
+        st.subheader("🏆 Division Comparison: Cumulative Reports")
+        
+        if not df.empty:
+            div_daily = df.groupby(['Date', 'Division']).size().reset_index(name='Daily')
+            div_pivot = div_daily.pivot(index='Date', columns='Division', values='Daily').fillna(0)
+            all_dates = pd.date_range(start=div_pivot.index.min(), end=div_pivot.index.max())
+            div_pivot = div_pivot.reindex(all_dates, fill_value=0)
+            div_cum = div_pivot.cumsum()
+            div_long = div_cum.stack().reset_index()
+            div_long.columns = ['Date', 'Division', 'Cumulative Reports']
+            div_long['Date_Str'] = div_long['Date'].dt.strftime('%Y-%m-%d')
+            
+            fig_div_anim = px.bar(
+                div_long, 
+                x="Division", 
+                y="Cumulative Reports", 
+                color="Division", 
+                animation_frame="Date_Str", 
+                range_y=[0, div_long['Cumulative Reports'].max() * 1.1],
+                title="Cumulative Reports by Division",
+                hover_data=['Cumulative Reports']
+            )
+            fig_div_anim.update_layout(xaxis_title="Forest Division", yaxis_title="Total Reports (Cumulative)", showlegend=False)
+            fig_div_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 100
+            st.plotly_chart(fig_div_anim, width="stretch")
+
+        st.divider()
+        st.subheader("⏳ Temporal Dynamics: Range Growth Animation")
+        
+        if not df.empty:
+            div_options = sorted(list(df['Division'].unique()))
+            selected_div_anim = st.selectbox("Select Division to Visualize:", div_options, key="anim_div_filter")
+            
+            subset = df[df['Division'] == selected_div_anim].copy()
+            
+            if not subset.empty:
+                daily_counts = subset.groupby(['Date', 'Range']).size().reset_index(name='Daily')
+                pivoted = daily_counts.pivot(index='Date', columns='Range', values='Daily').fillna(0)
+                full_date_range = pd.date_range(start=pivoted.index.min(), end=pivoted.index.max())
+                pivoted = pivoted.reindex(full_date_range, fill_value=0)
+                cum_pivoted = pivoted.cumsum()
+                cum_long = cum_pivoted.stack().reset_index()
+                cum_long.columns = ['Date', 'Range', 'Cumulative Entries']
+                cum_long['Date_Str'] = cum_long['Date'].dt.strftime('%Y-%m-%d')
                 
-                fig_tree = px.sunburst(
-                    tree_df,
-                    path=['Division', 'Range', 'Post'],
-                    values='Count',
-                    height=700,
-                    title="Staff Deployment Hierarchy"
+                fig_anim = px.bar(
+                    cum_long, 
+                    x="Range", 
+                    y="Cumulative Entries", 
+                    color="Range", 
+                    animation_frame="Date_Str", 
+                    range_y=[0, cum_long['Cumulative Entries'].max() * 1.1], 
+                    title=f"Cumulative Entry Growth by Range ({selected_div_anim})",
+                    hover_data=['Cumulative Entries']
                 )
-                st.plotly_chart(fig_tree, width="stretch")
+                
+                fig_anim.update_layout(xaxis_title="Forest Range", yaxis_title="Total Entries (Cumulative)", showlegend=False)
+                fig_anim.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = 100
+                st.plotly_chart(fig_anim, width="stretch")
+            else:
+                st.warning(f"No data available for Division: {selected_div_anim}")
+
+    # ==========================================
+    # H. DATA TABLES (Inside Tab 3)
+    # ==========================================
+    with tab_data:
+        st.subheader("📋 Data Tables & Reports")
+        
+        t1, t2 = st.tabs(["⚠️ Damage Report", "🏆 Leaderboards"])
+        with t1:
+            dmg = df.groupby(['Division', 'Range']).agg({'Crop Damage': lambda x: (x>0).sum(), 'House Damage': lambda x: (x>0).sum(), 'Injury': lambda x: (x>0).sum()}).reset_index()
+            dmg = dmg[(dmg['Crop Damage']>0)|(dmg['House Damage']>0)|(dmg['Injury']>0)]
+            dmg.columns = ['Division', 'Range', '🌾 Crop', '🏠 House', '🚑 Injury']
+            st.dataframe(dmg.style.background_gradient(cmap="Reds"), width=None, use_container_width=True)
+        with t2:
+            l1, l2 = st.columns(2)
+            with l1:
+                st.markdown("**Top Beats (Activity)**")
+                if 'Beat' in df.columns:
+                    st.dataframe(df['Beat'].value_counts().reset_index(name='Entries').head(10), width=None, use_container_width=True, hide_index=True)
+            with l2:
+                st.markdown("**Top Reporters**")
+                if 'Created By' in df.columns:
+                    st.dataframe(df['Created By'].value_counts().reset_index(name='Entries').head(10), width=None, use_container_width=True, hide_index=True)
+
+        # --- REPORT GENERATION ---
+        st.divider()
+        st.subheader("📄 Report Generation")
+        
+        if st.button("🖨️ Generate Full Report"):
+            sun_chart = fig_sun if 'fig_sun' in locals() and fig_sun else None
+            dam_chart = fig_damage if 'fig_damage' in locals() and fig_damage else None
+            
+            html_report = generate_full_html_report(df, m, fig_trend, fig_demog, fig_hourly, dam_chart, sun_chart, start, end)
+            st.download_button(
+                label="📥 Download HTML Report",
+                data=html_report,
+                file_name="Elephant_Monitoring_Report.html",
+                mime="text/html"
+            )
+
+    # ==========================================
+    # J. USER REGISTRY ANALYTICS (Inside Tab 4)
+    # ==========================================
+    with tab_staff:
+        if uploaded_users is not None:
+            st.title("👥 Gaj Rakshak Staff Analytics")
+            
+            # 1. Load & Clean Data
+            try:
+                u_df = pd.read_csv(uploaded_users)
+            except UnicodeDecodeError:
+                uploaded_users.seek(0)
+                u_df = pd.read_csv(uploaded_users, encoding='ISO-8859-1')
+                
+            # Standardize Columns
+            u_df.columns = [c.strip() for c in u_df.columns]
+            
+            if {'Division', 'Post'}.issubset(u_df.columns):
+                # Clean Data
+                u_df['Division'] = u_df['Division'].astype(str).str.title().str.strip()
+                u_df['Post'] = u_df['Post'].astype(str).str.title().str.strip()
+                if 'Range' in u_df.columns:
+                    u_df['Range'] = u_df['Range'].astype(str).str.title().str.strip()
+
+                # --- FILTER LOGIC: Exclude Divisions with < 10 Personnel ---
+                div_counts = u_df['Division'].value_counts()
+                valid_divs = div_counts[div_counts >= 10].index
+                
+                u_df_viz = u_df[u_df['Division'].isin(valid_divs)].copy()
+                
+                excluded_count = len(u_df) - len(u_df_viz)
+                if excluded_count > 0:
+                    st.info(f"ℹ️ Analytics focused on major divisions. {excluded_count} personnel from divisions with <10 staff are excluded from charts.")
+
+                if not u_df_viz.empty:
+                    # 2. Metrics
+                    total_users = len(u_df_viz)
+                    unique_divs = u_df_viz['Division'].nunique()
+                    unique_posts = u_df_viz['Post'].nunique()
+                    
+                    unique_ranges = 0
+                    if 'Range' in u_df_viz.columns:
+                        unique_ranges = u_df_viz['Range'].nunique()
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Total Registered Staff", total_users)
+                    c2.metric("Active Divisions", unique_divs)
+                    c3.metric("Active Ranges", unique_ranges)
+                    c4.metric("Designation Categories", unique_posts)
+                    
+                    # 3. Visualizations
+                    st.subheader("📊 Staff Distribution")
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Staff Strength by Division**")
+                        fig_users_div = px.histogram(
+                            u_df_viz, 
+                            x="Division", 
+                            color="Post", 
+                            title="Staff Count by Division & Designation",
+                            text_auto=True,
+                            barmode='stack'
+                        )
+                        fig_users_div.update_layout(yaxis_title="Count")
+                        st.plotly_chart(fig_users_div, width="stretch")
+                        
+                    with col2:
+                        st.markdown("**Designation Hierarchy**")
+                        post_counts = u_df_viz['Post'].value_counts().reset_index()
+                        post_counts.columns = ['Post', 'Count']
+                        fig_users_pie = px.pie(
+                            post_counts, 
+                            values='Count', 
+                            names='Post', 
+                            hole=0.4,
+                            title="Overall Designation Split"
+                        )
+                        st.plotly_chart(fig_users_pie, width="stretch")
+
+                    # 4. Sunburst Drill-Down
+                    if 'Range' in u_df_viz.columns:
+                        st.subheader("🔍 Hierarchy Drill-Down")
+                        st.markdown("Visualizing **Division ➔ Range ➔ Post** distribution.")
+                        
+                        tree_df = u_df_viz.fillna('Unknown').groupby(['Division', 'Range', 'Post']).size().reset_index(name='Count')
+                        
+                        fig_tree = px.sunburst(
+                            tree_df,
+                            path=['Division', 'Range', 'Post'],
+                            values='Count',
+                            height=700,
+                            title="Staff Deployment Hierarchy"
+                        )
+                        st.plotly_chart(fig_tree, width="stretch")
+                else:
+                    st.warning("⚠️ No divisions found with 10 or more trained personnel.")
+                    
+                # 5. Data Table
+                with st.expander("📄 View Full Staff List (All Records)"):
+                    st.dataframe(u_df, use_container_width=True)
+                    
+            else:
+                st.error("CSV must contain 'Division' and 'Post' columns.")
+
         else:
-            st.warning("⚠️ No divisions found with 10 or more trained personnel.")
-            
-        # 5. Data Table (Full list remains available for verification)
-        with st.expander("📄 View Full Staff List (All Records)"):
-            st.dataframe(u_df, use_container_width=True)
-            
-    else:
-        st.error("CSV must contain 'Division' and 'Post' columns.")
-
-else:
-    st.info("👆 Upload CSV to begin.")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")

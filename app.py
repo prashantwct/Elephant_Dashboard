@@ -1019,6 +1019,7 @@ if uploaded_csv is not None:
         )
 
     # ==========================================
+# ==========================================
 # J. USER REGISTRY ANALYTICS (New Section)
 # ==========================================
 
@@ -1043,68 +1044,89 @@ if uploaded_users is not None:
         if 'Range' in u_df.columns:
             u_df['Range'] = u_df['Range'].astype(str).str.title().str.strip()
 
-        # 2. Metrics
-        total_users = len(u_df)
-        unique_divs = u_df['Division'].nunique()
-        unique_posts = u_df['Post'].nunique()
+        # --- FILTER LOGIC: Exclude Divisions with < 10 Personnel ---
+        div_counts = u_df['Division'].value_counts()
+        valid_divs = div_counts[div_counts >= 10].index
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total Registered Staff", total_users)
-        c2.metric("Active Divisions", unique_divs)
-        c3.metric("Designation Categories", unique_posts)
+        # Create filtered dataframe for Analytics
+        u_df_viz = u_df[u_df['Division'].isin(valid_divs)].copy()
         
-        # 3. Visualizations
-        st.subheader("📊 Staff Distribution")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Chart A: Users by Division (Colored by Post)
-            st.markdown("**Staff Strength by Division**")
-            fig_users_div = px.histogram(
-                u_df, 
-                x="Division", 
-                color="Post", 
-                title="Staff Count by Division & Designation",
-                text_auto=True,
-                barmode='stack'
-            )
-            fig_users_div.update_layout(yaxis_title="Count")
-            st.plotly_chart(fig_users_div, width="stretch")
-            
-        with col2:
-            # Chart B: Designation Breakdown (Pie)
-            st.markdown("**Designation Hierarchy**")
-            post_counts = u_df['Post'].value_counts().reset_index()
-            post_counts.columns = ['Post', 'Count']
-            fig_users_pie = px.pie(
-                post_counts, 
-                values='Count', 
-                names='Post', 
-                hole=0.4,
-                title="Overall Designation Split"
-            )
-            st.plotly_chart(fig_users_pie, width="stretch")
+        # Optional: Notify user if data was filtered
+        excluded_count = len(u_df) - len(u_df_viz)
+        if excluded_count > 0:
+            st.info(f"ℹ️ Analytics focused on major divisions. {excluded_count} personnel from divisions with <10 staff are excluded from charts.")
 
-        # 4. Sunburst Drill-Down (Division -> Range -> Post)
-        if 'Range' in u_df.columns:
-            st.subheader("🔍 Hierarchy Drill-Down")
-            st.markdown("Visualizing **Division ➔ Range ➔ Post** distribution.")
+        if not u_df_viz.empty:
+            # 2. Metrics
+            total_users = len(u_df_viz)
+            unique_divs = u_df_viz['Division'].nunique()
+            unique_posts = u_df_viz['Post'].nunique()
             
-            # Group for clean tree structure
-            tree_df = u_df.fillna('Unknown').groupby(['Division', 'Range', 'Post']).size().reset_index(name='Count')
+            # Calculate Active Ranges
+            unique_ranges = 0
+            if 'Range' in u_df_viz.columns:
+                unique_ranges = u_df_viz['Range'].nunique()
             
-            fig_tree = px.sunburst(
-                tree_df,
-                path=['Division', 'Range', 'Post'],
-                values='Count',
-                height=700,
-                title="Staff Deployment Hierarchy"
-            )
-            st.plotly_chart(fig_tree, width="stretch")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Registered Staff", total_users)
+            c2.metric("Active Divisions", unique_divs)
+            c3.metric("Active Ranges", unique_ranges)
+            c4.metric("Designation Categories", unique_posts)
             
-        # 5. Data Table
-        with st.expander("📄 View Full Staff List"):
+            # 3. Visualizations
+            st.subheader("📊 Staff Distribution")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Chart A: Users by Division (Colored by Post)
+                st.markdown("**Staff Strength by Division**")
+                fig_users_div = px.histogram(
+                    u_df_viz, 
+                    x="Division", 
+                    color="Post", 
+                    title="Staff Count by Division & Designation",
+                    text_auto=True,
+                    barmode='stack'
+                )
+                fig_users_div.update_layout(yaxis_title="Count")
+                st.plotly_chart(fig_users_div, width="stretch")
+                
+            with col2:
+                # Chart B: Designation Breakdown (Pie)
+                st.markdown("**Designation Hierarchy**")
+                post_counts = u_df_viz['Post'].value_counts().reset_index()
+                post_counts.columns = ['Post', 'Count']
+                fig_users_pie = px.pie(
+                    post_counts, 
+                    values='Count', 
+                    names='Post', 
+                    hole=0.4,
+                    title="Overall Designation Split"
+                )
+                st.plotly_chart(fig_users_pie, width="stretch")
+
+            # 4. Sunburst Drill-Down (Division -> Range -> Post)
+            if 'Range' in u_df_viz.columns:
+                st.subheader("🔍 Hierarchy Drill-Down")
+                st.markdown("Visualizing **Division ➔ Range ➔ Post** distribution.")
+                
+                # Group for clean tree structure
+                tree_df = u_df_viz.fillna('Unknown').groupby(['Division', 'Range', 'Post']).size().reset_index(name='Count')
+                
+                fig_tree = px.sunburst(
+                    tree_df,
+                    path=['Division', 'Range', 'Post'],
+                    values='Count',
+                    height=700,
+                    title="Staff Deployment Hierarchy"
+                )
+                st.plotly_chart(fig_tree, width="stretch")
+        else:
+            st.warning("⚠️ No divisions found with 10 or more trained personnel.")
+            
+        # 5. Data Table (Full list remains available for verification)
+        with st.expander("📄 View Full Staff List (All Records)"):
             st.dataframe(u_df, use_container_width=True)
             
     else:

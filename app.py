@@ -1029,7 +1029,7 @@ if uploaded_csv is not None:
                     st.info(f"ℹ️ Analytics focused on major divisions. {excluded_count} personnel from divisions with <10 staff are excluded from charts.")
 
                 if not u_df_viz.empty:
-                    # 2. Metrics
+                 # 2. Metrics
                     total_users = len(u_df_viz)
                     unique_divs = u_df_viz['Division'].nunique()
                     unique_posts = u_df_viz['Post'].nunique()
@@ -1038,11 +1038,22 @@ if uploaded_csv is not None:
                     if 'Range' in u_df_viz.columns:
                         unique_ranges = u_df_viz['Range'].nunique()
                     
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Total Registered Staff", total_users)
-                    c2.metric("Active Divisions", unique_divs)
-                    c3.metric("Active Ranges", unique_ranges)
-                    c4.metric("Designation Categories", unique_posts)
+                    # Interactive Metrics (Buttons)
+                    m1, m2, m3, m4 = st.columns(4)
+                    
+                    # 1. Total Staff
+                    m1.button(f"👥 Total Staff\n\n# {total_users}", width="stretch", key="btn_staff")
+                    
+                    # 2. Active Divisions (Clickable)
+                    if m2.button(f"🌲 Active Divisions\n\n# {unique_divs}", width="stretch", key="btn_divs"):
+                         div_names = sorted(u_df_viz['Division'].unique())
+                         st.success(f"**Active Divisions ({len(div_names)}):** {', '.join(div_names)}")
+                    
+                    # 3. Active Ranges
+                    m3.button(f"📍 Active Ranges\n\n# {unique_ranges}", width="stretch", key="btn_ranges")
+                    
+                    # 4. Designations
+                    m4.button(f"🏷️ Designations\n\n# {unique_posts}", width="stretch", key="btn_posts")
                     
                     # 3. Visualizations
                     st.subheader("📊 Staff Distribution")
@@ -1102,3 +1113,4 @@ if uploaded_csv is not None:
 
         else:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
+

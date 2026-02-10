@@ -137,8 +137,9 @@ if uploaded_csv is not None:
         start, end = st.date_input("Date Range", [df_raw['Date'].min(), df_raw['Date'].max()])
         df = df_raw[(df_raw['Date'].dt.date >= start) & (df_raw['Date'].dt.date <= end)].copy()
         
-        sel_div = st.selectbox("Filter Division", ['All'] + sorted(list(df['Division'].unique())))
-        if sel_div != 'All': df = df[df['Division'] == sel_div]
+        # Get unique divisions, drop nulls, and ensure they are sorted as strings
+        unique_divisions = sorted([str(d) for d in df['Division'].dropna().unique()])
+        sel_div = st.selectbox("Filter Division", ['All'] + unique_divisions)
 
     # ==========================================
     # VISUALIZATION TABS
@@ -188,3 +189,4 @@ if uploaded_csv is not None:
 
 else:
     st.info("Please upload a sightings CSV to begin.")
+

@@ -180,41 +180,30 @@ def calculate_affected_villages(sightings_df, villages_df, radius_km=2.0):
 def identify_daytime_refuges(df):
     """
     Identifies staging areas by filtering for daylight hours (9AM-4PM)
-    where elephants are present but not currently raiding (Severity <= 1).
+    where elephants are present but not raiding (Severity Score <= 1).
     """
-    # 1. Filter for Daylight Hours (9 AM to 4 PM)
+    # 1. Filter for Daytime sightings
     day_df = df[(df['Hour'] >= 9) & (df['Hour'] <= 16)].copy()
-    
-    if day_df.empty:
-        return pd.DataFrame()
+    if day_df.empty: return pd.DataFrame()
 
-    # 2. Assign Refuge Weighting
-    # Direct sightings and evidence of foraging (broken branches) increase the refuge score
+    # 2. Score based on Foraging signs (e.g., broken branches)
     def calculate_score(row):
         score = 1.0
-        if row['Sighting Type'] == 'Direct':
-            score = 2.0
-        # Check for foraging activity in the sighting details
-        if "brokenBranches" in str(row['Sighting Type Detail']):
-            score += 0.5
+        if row['Sighting Type'] == 'Direct': score = 2.0
+        if "brokenBranches" in str(row['Sighting Type Detail']): score += 0.5
         return score
 
     day_df['Refuge_Weight'] = day_df.apply(calculate_score, axis=1)
 
-    # 3. Aggregate by Beat for non-conflict sightings
+    # 3. Group by Beat to identify persistent staging areas
     refuge_summary = day_df[day_df['Severity Score'] <= 1].groupby(['Division', 'Range', 'Beat']).agg({
         'Refuge_Weight': 'sum',
         'Total Count': 'mean',
-        'ID': 'count'
+        'Latitude': 'mean',
+        'Longitude': 'mean'
     }).reset_index()
 
-    refuge_summary = refuge_summary.rename(columns={
-        'Refuge_Weight': 'Persistence Score',
-        'ID': 'Sighting Frequency',
-        'Total Count': 'Avg Group Size'
-    })
-
-    return refuge_summary.sort_values('Persistence Score', ascending=False)
+    return refuge_summary.rename(columns={'Refuge_Weight': 'Persistence Score'}).sort_values('Persistence Score', ascending=False)
 # ==========================================
 # 3. KML/GEOJSON PARSING (Map Layers)
 # ==========================================
@@ -840,39 +829,34 @@ if uploaded_csv is not None:
                         tooltip=f"<b>{v['Village']}</b>"
                     ).add_to(m)
 
-           # --- CORRECTED: DAYTIME REFUGE MAP LAYER ---
-            refuge_summary = identify_daytime_refuges(df)
+          # --- NEW: DAYTIME REFUGE LAYER ---
+            refuge_layer = folium.FeatureGroup(name="🐘 Daytime Refuges")
+            ref_df = identify_daytime_refuges(df)
             
-            if not refuge_summary.empty:
-                # 1. Get the Top 10 Refuge Beats
-                top_refuge_beats = refuge_summary.head(10)
-                
-                # 2. Extract coordinates from the main dataframe
-                # We group by Beat to get the average position for that staging area
-                beat_coords = df[df['Beat'].isin(top_refuge_beats['Beat'])].groupby('Beat').agg({
-                    'Latitude': 'mean',
-                    'Longitude': 'mean'
-                }).reset_index()
-
-                # 3. Merge the coordinates with the calculated scores
-                map_refuges = pd.merge(beat_coords, top_refuge_beats, on='Beat')
-
-                # 4. Create a Feature Group so it can be toggled in the map legend
-                refuge_layer = folium.FeatureGroup(name="🐘 Daytime Refuges")
-                
-                for _, ref in map_refuges.iterrows():
-                    # Tooltip for quick info
-                    ref_tooltip = f"<b>Refuge Beat: {ref['Beat']}</b><br>Persistence Score: {ref['Persistence Score']:.2f}"
-                    
-                    # Add a marker with a 'tree' icon to signify forest refuge
+            if not ref_df.empty:
+                for _, ref in ref_df.head(10).iterrows():
                     folium.Marker(
                         location=[ref['Latitude'], ref['Longitude']],
-                        icon=folium.Icon(color="green", icon="tree", prefix="fa"),
-                        tooltip=ref_tooltip,
-                        popup=f"Staging area with high foraging activity and zero daytime conflict."
+                        icon=folium.Icon(color="green", icon="leaf", prefix="fa"),
+                        tooltip=f"<b>Refuge: {ref['Beat']}</b><br>Persistence: {ref['Persistence Score']:.1f}",
+                        popup="Staging area with high daytime foraging activity."
                     ).add_to(refuge_layer)
-                
-                refuge_layer.add_to(m)
+            refuge_layer.add_to(m)
+
+            # --- NEW: MAP LEGEND (HTML Floating Box) ---
+            legend_html = '''
+            <div style="position: fixed; bottom: 50px; left: 50px; width: 180px; height: 160px; 
+                        background-color: white; border:2px solid grey; z-index:9999; font-size:12px;
+                        padding: 10px; border-radius: 5px; opacity: 0.9;">
+            <b>Map Legend</b><br>
+            <i class="fa fa-leaf" style="color:green"></i> Daytime Refuge<br>
+            <i class="fa fa-home" style="color:red"></i> Village (At Risk)<br>
+            <i class="fa fa-circle" style="color:orange"></i> Crop Damage<br>
+            <i class="fa fa-circle" style="color:blue"></i> Direct Sighting<br>
+            <i class="fa fa-circle" style="color:purple"></i> Night Activity<br>
+            </div>
+            '''
+            m.get_root().html.add_child(folium.Element(legend_html))
             # 6. Add Layer Control
             folium.LayerControl().add_to(m)
 
@@ -1230,5 +1214,6 @@ if uploaded_csv is not None:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
     
+
 
 

@@ -176,6 +176,45 @@ def calculate_affected_villages(sightings_df, villages_df, radius_km=2.0):
     # Apply to all rows
     sightings_df['Affected Villages'] = sightings_df.apply(get_villages_in_radius, axis=1)
     return sightings_df
+
+def identify_daytime_refuges(df):
+    """
+    Identifies staging areas by filtering for daylight hours (9AM-4PM)
+    where elephants are present but not currently raiding (Severity <= 1).
+    """
+    # 1. Filter for Daylight Hours (9 AM to 4 PM)
+    day_df = df[(df['Hour'] >= 9) & (df['Hour'] <= 16)].copy()
+    
+    if day_df.empty:
+        return pd.DataFrame()
+
+    # 2. Assign Refuge Weighting
+    # Direct sightings and evidence of foraging (broken branches) increase the refuge score
+    def calculate_score(row):
+        score = 1.0
+        if row['Sighting Type'] == 'Direct':
+            score = 2.0
+        # Check for foraging activity in the sighting details
+        if "brokenBranches" in str(row['Sighting Type Detail']):
+            score += 0.5
+        return score
+
+    day_df['Refuge_Weight'] = day_df.apply(calculate_score, axis=1)
+
+    # 3. Aggregate by Beat for non-conflict sightings
+    refuge_summary = day_df[day_df['Severity Score'] <= 1].groupby(['Division', 'Range', 'Beat']).agg({
+        'Refuge_Weight': 'sum',
+        'Total Count': 'mean',
+        'ID': 'count'
+    }).reset_index()
+
+    refuge_summary = refuge_summary.rename(columns={
+        'Refuge_Weight': 'Persistence Score',
+        'ID': 'Sighting Frequency',
+        'Total Count': 'Avg Group Size'
+    })
+
+    return refuge_summary.sort_values('Persistence Score', ascending=False)
 # ==========================================
 # 3. KML/GEOJSON PARSING (Map Layers)
 # ==========================================
@@ -635,8 +674,9 @@ if uploaded_csv is not None:
     # TABS CONFIGURATION
     # ==========================================
     st.divider()
-    tab_map, tab_charts, tab_data, tab_staff = st.tabs(["🗺️ Live Map", "📊 Analytics", "📋 Data & Reports", "👥 Staff Registry"])
-
+   tab_map, tab_charts, tab_refuge, tab_data, tab_staff = st.tabs([
+    "🗺️ Live Map", "📊 Analytics", "🐘 Daytime Refuges", "📋 Data & Reports", "👥 Staff Registry"
+])
     # ==========================================
     # F. MAP VISUALIZATION (Inside Tab 1)
     # ==========================================
@@ -1113,3 +1153,45 @@ if uploaded_csv is not None:
 
         else:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
+
+    with tab_refuge:
+    st.subheader("🐘 Predicted Daytime Refuges")
+    st.markdown("""
+    This analysis identifies **Staging Areas** where elephants spend daylight hours before moving into 
+    human-interest areas. It prioritizes locations with foraging signs (broken branches/dung) 
+    and no reported conflict during daylight hours.
+    """)
+
+    # Generate the refuge analysis
+    refuge_df = identify_daytime_refuges(df)
+
+    if not refuge_df.empty:
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            # Visualization of the top staging beats
+            fig_refuge = px.bar(
+                refuge_df.head(10),
+                x='Beat',
+                y='Persistence Score',
+                color='Avg Group Size',
+                title="Top 10 Daytime Staging Beats (by Persistence Score)",
+                hover_data=['Division', 'Range', 'Sighting Frequency'],
+                color_continuous_scale='Greens'
+            )
+            st.plotly_chart(fig_refuge, use_container_width=True)
+
+        with col2:
+            # Metrics and Top Lists
+            st.metric("Primary Refuge Beat", refuge_df.iloc[0]['Beat'])
+            st.write("**High-Confidence Refuges**")
+            st.dataframe(
+                refuge_df[['Division', 'Range', 'Beat', 'Persistence Score']].head(15),
+                hide_index=True,
+                use_container_width=True
+            )
+            
+        st.info("💡 **Operational Insight:** Use this data to direct morning patrols toward these Beats, intercepting herds before they move toward agricultural fields at dusk.")
+    else:
+        st.warning("Insufficient daylight data (9 AM - 4 PM) within the selected filters to identify refuges.")
+

@@ -741,125 +741,90 @@ if uploaded_csv is not None:
 
         # --- LEFT COLUMN: MAP ---
         with c_map:
-            # 1. Initialize Map
             m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="OpenStreetMap")
 
-            # 2. Add Google Hybrid (Optional Toggle)
+            # 1. Base Layer Toggle
             folium.TileLayer(
                 tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
-                attr='Google',
-                name='Google Hybrid',
-                overlay=False,
-                control=True
+                attr='Google', name='Google Hybrid', overlay=False
             ).add_to(m)
 
-            # 3. GeoJSON Boundaries
+            # 2. Layer: Boundaries
+            boundary_layer = folium.FeatureGroup(name="🗺️ Region Boundaries", show=True)
             if geojson_features:
                 folium.GeoJson(
                     data={"type": "FeatureCollection", "features": geojson_features},
                     style_function=lambda x: {'fillColor': '#3388ff', 'color': '#3388ff', 'weight': 1, 'fillOpacity': 0.1},
                     tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Region:'])
-                ).add_to(m)
+                ).add_to(boundary_layer)
+            boundary_layer.add_to(m)
 
-            # 4. Markers
+            # 3. Layer: Sightings & Heatmap
+            sightings_layer = folium.FeatureGroup(name="👁️ Sighting Activity", show=True)
             if map_mode == "Heatmap":
-                # Weight Multiplier: Direct = 1.0, Indirect = 0.5
-                heat_data = []
-                for _, r in displayed_map_df.iterrows():
-                    weight = max(r['Severity Score'], 1)
-                    if r['Sighting Type'] == 'Indirect':
-                        weight *= 0.5  # Decay for indirect signs
-                    heat_data.append([r['Latitude'], r['Longitude'], weight])
-
-                HeatMap(heat_data, radius=15, blur=10).add_to(m)
+                heat_data = [[r['Latitude'], r['Longitude'], max(r['Severity Score'], 1)] for _, r in displayed_map_df.iterrows()]
+                HeatMap(heat_data, radius=15, blur=10).add_to(sightings_layer)
             else:
                 for _, row in displayed_map_df.iterrows():
-                    color = 'green'
-                    radius = 4
-                    if st.session_state.map_filter == 'Severity_View':
-                        s = row['Severity Score']
-                        if s >= 20: color='darkred'; radius=15
-                        elif s >= 5: color='red'; radius=10
-                        elif s >= 2.5: color='orange'; radius=7
-                        else: color='blue'; radius=4
-                    elif st.session_state.map_filter == 'Night_View':
-                        color='purple'; radius=6
-                    else:
-                        if row['Injury']>0: color='darkred'
-                        elif row['House Damage']>0: color='red'
-                        elif row['Crop Damage']>0: color='orange'
-                        elif row['Sighting Type'] == 'Direct': color='blue'
-
-                    dmg_str = []
-                    if row['Crop Damage'] > 0: dmg_str.append('Crop')
-                    if row['House Damage'] > 0: dmg_str.append('House')
-                    if row['Injury'] > 0: dmg_str.append('Injury')
-                    dmg_txt = ", ".join(dmg_str) if dmg_str else "None"
-
-                    tooltip = f"""
-                    <div style='font-family:sans-serif; font-size:12px;'>
-                        <b>📅 {row['Date'].date()}</b> | 🕒 {row['Time'] if pd.notnull(row['Time']) else '???'}<br>
-                        <b>📍 Location:</b> {row['Beat']}<br>
-                        <b>🐘 Herd:</b> M:{int(row['Male Count'])} | F:{int(row['Female Count'])} | C:{int(row['Calf Count'])}<br>
-                        <b>⚠️ Damage:</b> {dmg_txt}
-                    </div>
-                    """
-
+                    # Logic for color and radius based on Severity Score 
+                    color = 'blue'; radius = 4
+                    s = row['Severity Score']
+                    if s >= 20: color='darkred'; radius=10
+                    elif s >= 5: color='red'; radius=8
+                    elif s >= 2.5: color='orange'; radius=6
+                    
                     folium.CircleMarker(
                         [row['Latitude'], row['Longitude']],
-                        radius=radius, color=color, fill=True, fill_color=color, fill_opacity=0.7,
-                        tooltip=tooltip
-                    ).add_to(m)
+                        radius=radius, color=color, fill=True, fill_opacity=0.7,
+                        tooltip=f"Beat: {row['Beat']} | Date: {row['Date'].date()}"
+                    ).add_to(sightings_layer)
+            sightings_layer.add_to(m)
 
-            # 5. Risk Rings
-            if village_df is not None:
-                villages_to_show = [v for v in risk_villages if v['Village'] == st.session_state.selected_village] if st.session_state.selected_village else risk_villages
-                for v in villages_to_show:
-                    folium.Circle(
-                        location=[v['Lat'], v['Lon']],
-                        radius=v['Radius'],
-                        color=v['Color'],
-                        weight=3 if st.session_state.selected_village else 2,
-                        fill=True, fill_opacity=0.15,
-                        tooltip=f"<b>{v['Village']}</b><br>{v['Reason']}"
-                    ).add_to(m)
-                    folium.Marker(
-                        location=[v['Lat'], v['Lon']],
-                        icon=folium.Icon(color="red" if v['Color']=='red' else "orange", icon="home", prefix="fa"),
-                        tooltip=f"<b>{v['Village']}</b>"
-                    ).add_to(m)
-
-          # --- NEW: DAYTIME REFUGE LAYER ---
-            refuge_layer = folium.FeatureGroup(name="🐘 Daytime Refuges")
+            # 4. Layer: Daytime Refuges
+            refuge_layer = folium.FeatureGroup(name="🐘 Daytime Refuges (Staging)", show=False)
             ref_df = identify_daytime_refuges(df)
-            
             if not ref_df.empty:
                 for _, ref in ref_df.head(10).iterrows():
                     folium.Marker(
                         location=[ref['Latitude'], ref['Longitude']],
                         icon=folium.Icon(color="green", icon="leaf", prefix="fa"),
-                        tooltip=f"<b>Refuge: {ref['Beat']}</b><br>Persistence: {ref['Persistence Score']:.1f}",
-                        popup="Staging area with high daytime foraging activity."
+                        tooltip=f"<b>Refuge: {ref['Beat']}</b><br>Score: {ref['Persistence Score']:.1f}"
                     ).add_to(refuge_layer)
             refuge_layer.add_to(m)
 
-            # --- NEW: MAP LEGEND (HTML Floating Box) ---
+            # 5. Layer: Risk Villages
+            village_layer = folium.FeatureGroup(name="🏘️ Risk Villages", show=True)
+            if village_df is not None:
+                for v in risk_villages:
+                    folium.Circle(
+                        location=[v['Lat'], v['Lon']], radius=v['Radius'],
+                        color=v['Color'], fill=True, fill_opacity=0.15,
+                        tooltip=f"Village: {v['Village']}"
+                    ).add_to(village_layer)
+                    folium.Marker(
+                        location=[v['Lat'], v['Lon']],
+                        icon=folium.Icon(color="red" if v['Color']=='red' else "orange", icon="home", prefix="fa")
+                    ).add_to(village_layer)
+            village_layer.add_to(m)
+
+            # 6. Final Layer Control & Legend
+            folium.LayerControl(collapsed=False).add_to(m)
+
+            # Floating Legend
             legend_html = '''
-            <div style="position: fixed; bottom: 50px; left: 50px; width: 180px; height: 160px; 
+            <div style="position: fixed; bottom: 50px; left: 50px; width: 160px; height: 130px; 
                         background-color: white; border:2px solid grey; z-index:9999; font-size:12px;
-                        padding: 10px; border-radius: 5px; opacity: 0.9;">
-            <b>Map Legend</b><br>
-            <i class="fa fa-leaf" style="color:green"></i> Daytime Refuge<br>
-            <i class="fa fa-home" style="color:red"></i> Village (At Risk)<br>
-            <i class="fa fa-circle" style="color:orange"></i> Crop Damage<br>
-            <i class="fa fa-circle" style="color:blue"></i> Direct Sighting<br>
-            <i class="fa fa-circle" style="color:purple"></i> Night Activity<br>
+                        padding: 10px; border-radius: 5px;">
+            <b>Legend</b><br>
+            <i class="fa fa-leaf" style="color:green"></i> Refuge<br>
+            <i class="fa fa-home" style="color:red"></i> Village<br>
+            <i class="fa fa-circle" style="color:blue"></i> Sighting
             </div>
             '''
             m.get_root().html.add_child(folium.Element(legend_html))
-            # 6. Add Layer Control
-            folium.LayerControl().add_to(m)
 
+            st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
+         
             # 7. RENDER COMMAND
             st_data = st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
 
@@ -1214,6 +1179,7 @@ if uploaded_csv is not None:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
     
+
 
 
 

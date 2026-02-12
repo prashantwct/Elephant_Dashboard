@@ -661,7 +661,16 @@ if uploaded_csv is not None:
     else: explanation = "📍 **Viewing All Data:** Showing all records."
     st.info(explanation)
 
-# ==========================================
+    # ==========================================
+    # INITIALIZE SESSION STATE
+    # ==========================================
+    if 'selected_village' not in st.session_state:
+        st.session_state.selected_village = None
+
+    if 'map_filter' not in st.session_state:
+        st.session_state.map_filter = 'All'
+
+    # ==========================================
     # TABS CONFIGURATION
     # ==========================================
     st.divider()
@@ -1113,6 +1122,7 @@ if uploaded_csv is not None:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
     
+
 
 
 

@@ -739,69 +739,100 @@ if uploaded_csv is not None:
                         st.session_state.selected_village = v['Village']
                         st.rerun()
 
-        # --- LEFT COLUMN: MAP ---
-       with c_map:
-            # Base Map: Set to Dark Matter for a techy baseline
-            m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="CartoDB dark_matter")
+         # ==========================================
+    # F. MODERN COMMAND CENTRE MAP (Inside Tab 1)
+    # ==========================================
+    with tab_map:
+        # 1. Initialize State & Data
+        if 'selected_village' not in st.session_state:
+            st.session_state.selected_village = None
+        
+        map_df = df.copy()
+        # Apply existing session filters
+        if st.session_state.map_filter == 'Conflict':
+            map_df = map_df[(map_df['Crop Damage']>0)|(map_df['House Damage']>0)|(map_df['Injury']>0)]
+        elif st.session_state.map_filter == 'Night_View':
+            map_df = map_df[map_df['Is_Night'] == 1]
+        
+        risk_villages = []
+        if village_df is not None:
+            risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
 
-            # --- SATELLITE & BASE LAYERS ---
+        # 2. Layout
+        c_map, c_list = st.columns([3, 1])
+
+        with c_list:
+            st.subheader("🚨 Threat Matrix")
+            if st.button("🌍 Reset View", use_container_width=True):
+                st.session_state.selected_village = None
+                st.rerun()
+            st.markdown("---")
+            if not risk_villages:
+                st.info("No active threats.")
+            else:
+                for i, v in enumerate(risk_villages):
+                    if st.button(f"{v['Village']}\n({v['Reason']})", key=f"v_{i}", use_container_width=True):
+                        st.session_state.selected_village = v['Village']
+                        st.rerun()
+
+        with c_map:
+            # Initialize with Dark Theme for "Tech" look
+            m = folium.Map(location=[23.5, 80.5], zoom_start=9, tiles="CartoDB dark_matter")
+
+            # --- SELECTABLE BASE LAYERS ---
             folium.TileLayer(
                 tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
                 attr='Google', name='🛰️ Satellite Hybrid', overlay=False
             ).add_to(m)
-            
             folium.TileLayer('CartoDB dark_matter', name='🌃 Tactical Dark', overlay=False).add_to(m)
 
-            # --- LAYER: SECTOR BOUNDARIES (Glow Effect) ---
+            # --- LAYER 1: SECTOR BOUNDARIES ---
             boundary_layer = folium.FeatureGroup(name="🛰️ Sector Boundaries", show=True)
             if geojson_features:
                 folium.GeoJson(
                     data={"type": "FeatureCollection", "features": geojson_features},
-                    style_function=lambda x: {
-                        'fillColor': '#00f2ff', 'color': '#00f2ff', 
-                        'weight': 1, 'fillOpacity': 0.05
-                    }
+                    style_function=lambda x: {'fillColor': '#00f2ff', 'color': '#00f2ff', 'weight': 1, 'fillOpacity': 0.05}
                 ).add_to(boundary_layer)
             boundary_layer.add_to(m)
 
-            # --- LAYER: DAYTIME REFUGES (Neon Green Glow) ---
+            # --- LAYER 2: DAYTIME REFUGES (Neon Glow) ---
             refuge_layer = folium.FeatureGroup(name="🔋 Active Refuges", show=True)
-            ref_df = identify_daytime_refuges(df)
+            ref_df = identify_daytime_refuges(df) # Ensure this function is defined in Section 2
             if not ref_df.empty:
-                for _, ref in ref_df.head(15).iterrows():
-                    # Main Node
+                for _, ref in ref_df.head(10).iterrows():
                     folium.CircleMarker(
                         location=[ref['Latitude'], ref['Longitude']],
-                        radius=ref['Confidence'] * 1.5,
-                        color='#39FF14', fill=True, fill_color='#39FF14', fill_opacity=0.4,
-                        tooltip=f"<b>REFUGE DETECTED</b><br>Beat: {ref['Beat']}<br>Confidence: {ref['Confidence']:.1f}"
+                        radius=ref['Confidence'] * 2,
+                        color='#39FF14', fill=True, fill_color='#39FF14', fill_opacity=0.3,
+                        tooltip=f"REFUGE: {ref['Beat']} (Conf: {ref['Confidence']:.1f})"
                     ).add_to(refuge_layer)
             refuge_layer.add_to(m)
 
-            # --- LAYER: THREAT MATRIX (Red Pulse for Conflict) ---
-            threat_layer = folium.FeatureGroup(name="⚠️ Threat Matrix", show=True)
-            threat_data = displayed_map_df[displayed_map_df['Severity Score'] > 1]
-            for _, row in threat_data.iterrows():
+            # --- LAYER 3: THREAT NODES (Animated Pulse Logic) ---
+            threat_layer = folium.FeatureGroup(name="🚨 Incident Pulse", show=True)
+            for _, row in map_df[map_df['Severity Score'] > 5].iterrows():
+                # Outer pulse
                 folium.CircleMarker(
                     location=[row['Latitude'], row['Longitude']],
-                    radius=8, color='#FF3131', fill=True, fill_color='#FF3131', fill_opacity=0.8,
-                    popup=f"SEVERITY: {row['Severity Score']}"
+                    radius=15, color='#FF3131', fill=True, fill_opacity=0.2
+                ).add_to(threat_layer)
+                # Inner core
+                folium.CircleMarker(
+                    location=[row['Latitude'], row['Longitude']],
+                    radius=5, color='#FF3131', fill=True, fill_opacity=0.8
                 ).add_to(threat_layer)
             threat_layer.add_to(m)
 
-            # --- CSS FLOATING COMMAND LEGEND ---
+            # --- MODERN HUD LEGEND ---
             legend_html = '''
-            <div style="position: fixed; bottom: 30px; left: 30px; width: 220px; 
-                        background: rgba(10, 10, 10, 0.85); color: #00f2ff; 
-                        border: 1px solid #00f2ff; z-index:9999; font-family: 'Courier New', monospace;
-                        padding: 15px; border-radius: 4px; box-shadow: 0 0 15px rgba(0, 242, 255, 0.4);">
-            <b style="letter-spacing: 2px;">SYS_COMMAND: ACTIVE</b><hr style="border-color:#00f2ff; opacity:0.3;">
-            <span style="color:#39FF14; text-shadow: 0 0 5px #39FF14;">●</span> REFUGE_STAGING<br>
-            <span style="color:#FF3131; text-shadow: 0 0 5px #FF3131;">●</span> THREAT_INCIDENT<br>
-            <span style="color:#00f2ff;">—</span> SECTOR_BOUNDARY<br>
-            <br>
-            <small style="font-size: 9px; opacity: 0.6;">COORD_REF: WGS84</small><br>
-            <small style="font-size: 9px; opacity: 0.6;">STATUS: MONITORING...</small>
+            <div style="position: fixed; bottom: 30px; left: 30px; width: 180px; 
+                        background: rgba(10, 10, 10, 0.8); color: #00f2ff; 
+                        border: 1px solid #00f2ff; z-index:9999; font-family: monospace;
+                        padding: 10px; border-radius: 4px; font-size: 11px;">
+            <b style="letter-spacing: 1px;">HUD: MONITORING</b><hr style="border-color:#00f2ff; opacity:0.3;">
+            <span style="color:#39FF14;">●</span> REFUGE_STAGING<br>
+            <span style="color:#FF3131;">●</span> THREAT_MATRIX<br>
+            <span style="color:#00f2ff;">—</span> SECTOR_LIMIT<br>
             </div>
             '''
             m.get_root().html.add_child(folium.Element(legend_html))
@@ -1163,6 +1194,7 @@ if uploaded_csv is not None:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
     
+
 
 
 

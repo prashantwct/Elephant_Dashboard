@@ -668,117 +668,34 @@ if uploaded_csv is not None:
     tab_map, tab_charts, tab_refuge, tab_data, tab_staff = st.tabs([
     "🗺️ Live Map", "📊 Analytics", "🐘 Daytime Refuges", "📋 Data & Reports", "👥 Staff Registry"
 ])
-    # ==========================================
-    # F. MAP VISUALIZATION (Inside Tab 1)
-    # ==========================================
     with tab_map:
-        # 1. Initialize Selection State
-        if 'selected_village' not in st.session_state:
-            st.session_state.selected_village = None
-
-        # 2. PREPARE BASE MAP DATA
-        map_df = df.copy()
-
-        if st.session_state.map_filter == 'Conflict':
-            map_df = map_df[(map_df['Crop Damage']>0)|(map_df['House Damage']>0)|(map_df['Injury']>0)]
-        elif st.session_state.map_filter == 'Night_View':
-            map_df = map_df[map_df['Is_Night'] == 1]
-        elif st.session_state.map_filter == 'Hotspot_View' and st.session_state.hotspot_beat:
-            map_df = map_df[map_df['Beat'] == st.session_state.hotspot_beat]
-        elif st.session_state.map_filter == 'Direct':
-            map_df = map_df[map_df['Sighting Type'] == 'Direct']
-        elif st.session_state.map_filter == 'Males':
-            map_df = map_df[map_df['Male Count'] > 0]
-        elif st.session_state.map_filter == 'Calves':
-            map_df = map_df[map_df['Calf Count'] > 0]
-
-        # 3. Calculate Risk Villages
-        risk_villages = []
-        if village_df is not None:
-            risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
-
-        # 4. Handle Selection & Zoom Logic
-        displayed_map_df = map_df.copy()
-
-        # Default View
-        map_center = [23.5, 80.5]
-        map_zoom = 9
-
-        if st.session_state.selected_village and village_df is not None:
-            sel_v = next((v for v in risk_villages if v['Village'] == st.session_state.selected_village), None)
-            if sel_v:
-                map_center = [sel_v['Lat'], sel_v['Lon']]
-                map_zoom = 13
-                search_rad = max(p_dmg_rad, p_pres_rad)
-                v_lons = sel_v['Lon']
-                v_lats = sel_v['Lat']
-                s_lons = displayed_map_df['Longitude'].values
-                s_lats = displayed_map_df['Latitude'].values
-                if len(s_lons) > 0:
-                    dists = haversine_np(v_lons, v_lats, s_lons, s_lats)
-                    displayed_map_df = displayed_map_df[dists <= search_rad]
-
-        # 5. Create Layout
+        # Layout for Command Centre
         c_map, c_list = st.columns([3, 1])
 
-        # --- RIGHT COLUMN: LIST ---
+        # Setup Map Data
+        map_df = df.copy()
+        risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days) if village_df is not None else []
+
         with c_list:
-            st.subheader("🚨 Affected Villages")
-            if st.button("🌍 Show Full Map", type="secondary", use_container_width=True):
+            st.markdown("### 🛰️ Active Intel")
+            if st.button("📡 Reset System View", use_container_width=True):
                 st.session_state.selected_village = None
                 st.rerun()
-            st.markdown("---")
-
+            st.divider()
+            
             if not risk_villages:
-                st.info("No villages at risk.")
+                st.info("No threats detected.")
             else:
-                for i, v in enumerate(risk_villages):
+                for v in risk_villages:
                     is_active = (v['Village'] == st.session_state.selected_village)
-                    btn_type = "primary" if is_active else "secondary"
-                    label = f"{'📍' if is_active else ''} {v['Village']}"
-                    # Unique key prevents duplicate error
-                    if st.button(f"{label}\n\n({v['Reason']})", key=f"btn_{v['Village']}_{i}", type=btn_type, use_container_width=True):
-                        st.session_state.selected_village = v['Village']
-                        st.rerun()
-
-         # ==========================================
-    # F. MODERN COMMAND CENTRE MAP (Inside Tab 1)
-    # ==========================================
-    with tab_map:
-        # 1. Initialize State & Data
-        if 'selected_village' not in st.session_state:
-            st.session_state.selected_village = None
-        
-        map_df = df.copy()
-        # Apply existing session filters
-        if st.session_state.map_filter == 'Conflict':
-            map_df = map_df[(map_df['Crop Damage']>0)|(map_df['House Damage']>0)|(map_df['Injury']>0)]
-        elif st.session_state.map_filter == 'Night_View':
-            map_df = map_df[map_df['Is_Night'] == 1]
-        
-        risk_villages = []
-        if village_df is not None:
-            risk_villages = identify_risk_villages(map_df, village_df, p_dmg_rad, p_pres_rad, p_days)
-
-        # 2. Layout
-        c_map, c_list = st.columns([3, 1])
-
-        with c_list:
-            st.subheader("🚨 Threat Matrix")
-            if st.button("🌍 Reset View", use_container_width=True):
-                st.session_state.selected_village = None
-                st.rerun()
-            st.markdown("---")
-            if not risk_villages:
-                st.info("No active threats.")
-            else:
-                for i, v in enumerate(risk_villages):
-                    if st.button(f"{v['Village']}\n({v['Reason']})", key=f"v_{i}", use_container_width=True):
+                    if st.button(f"{'📍' if is_active else '🏘️'} {v['Village']}\n({v['Reason']})", 
+                                 key=f"hud_{v['Village']}", use_container_width=True, 
+                                 type="primary" if is_active else "secondary"):
                         st.session_state.selected_village = v['Village']
                         st.rerun()
 
         with c_map:
-            # Initialize with Dark Theme for "Tech" look
+            # Initialize with Techy Dark Theme
             m = folium.Map(location=[23.5, 80.5], zoom_start=9, tiles="CartoDB dark_matter")
 
             # --- SELECTABLE BASE LAYERS ---
@@ -786,65 +703,65 @@ if uploaded_csv is not None:
                 tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
                 attr='Google', name='🛰️ Satellite Hybrid', overlay=False
             ).add_to(m)
-            folium.TileLayer('CartoDB dark_matter', name='🌃 Tactical Dark', overlay=False).add_to(m)
+            folium.TileLayer('CartoDB dark_matter', name='🌃 Tactical Dark', overlay=True).add_to(m)
 
             # --- LAYER 1: SECTOR BOUNDARIES ---
-            boundary_layer = folium.FeatureGroup(name="🛰️ Sector Boundaries", show=True)
+            boundary_layer = folium.FeatureGroup(name="🗺️ Sector Boundaries", show=True).add_to(m)
             if geojson_features:
                 folium.GeoJson(
                     data={"type": "FeatureCollection", "features": geojson_features},
                     style_function=lambda x: {'fillColor': '#00f2ff', 'color': '#00f2ff', 'weight': 1, 'fillOpacity': 0.05}
                 ).add_to(boundary_layer)
-            boundary_layer.add_to(m)
 
             # --- LAYER 2: DAYTIME REFUGES (Neon Glow) ---
-            refuge_layer = folium.FeatureGroup(name="🔋 Active Refuges", show=True)
-            ref_df = identify_daytime_refuges(df) # Ensure this function is defined in Section 2
+            refuge_layer = folium.FeatureGroup(name="🟢 Active Refuges", show=True).add_to(m)
+            ref_df = identify_daytime_refuges(df)
             if not ref_df.empty:
                 for _, ref in ref_df.head(10).iterrows():
+                    # Neon pulse marker
                     folium.CircleMarker(
                         location=[ref['Latitude'], ref['Longitude']],
-                        radius=ref['Confidence'] * 2,
+                        radius=ref['Confidence'] * 1.5,
                         color='#39FF14', fill=True, fill_color='#39FF14', fill_opacity=0.3,
-                        tooltip=f"REFUGE: {ref['Beat']} (Conf: {ref['Confidence']:.1f})"
+                        tooltip=f"<b>REFUGE: {ref['Beat']}</b><br>Confidence: {ref['Confidence']:.1f}"
                     ).add_to(refuge_layer)
-            refuge_layer.add_to(m)
 
-            # --- LAYER 3: THREAT NODES (Animated Pulse Logic) ---
-            threat_layer = folium.FeatureGroup(name="🚨 Incident Pulse", show=True)
-            for _, row in map_df[map_df['Severity Score'] > 5].iterrows():
-                # Outer pulse
+            # --- LAYER 3: THREAT MATRIX (Animated Core Pulse) ---
+            threat_layer = folium.FeatureGroup(name="🚨 Threat Pulse", show=True).add_to(m)
+            incidents = map_df[map_df['Severity Score'] > 5]
+            for _, row in incidents.iterrows():
+                # Outer "Wave"
                 folium.CircleMarker(
                     location=[row['Latitude'], row['Longitude']],
-                    radius=15, color='#FF3131', fill=True, fill_opacity=0.2
+                    radius=12, color='#FF3131', weight=1, fill=True, fill_opacity=0.1
                 ).add_to(threat_layer)
-                # Inner core
+                # Inner Core
                 folium.CircleMarker(
                     location=[row['Latitude'], row['Longitude']],
-                    radius=5, color='#FF3131', fill=True, fill_opacity=0.8
+                    radius=5, color='#FF3131', fill=True, fill_opacity=0.8,
+                    popup=f"SEVERITY: {row['Severity Score']}"
                 ).add_to(threat_layer)
-            threat_layer.add_to(m)
 
-            # --- MODERN HUD LEGEND ---
+            # --- CUSTOM COMMAND HUD (Legend) ---
             legend_html = '''
             <div style="position: fixed; bottom: 30px; left: 30px; width: 180px; 
-                        background: rgba(10, 10, 10, 0.8); color: #00f2ff; 
+                        background: rgba(15, 15, 15, 0.85); color: #00f2ff; 
                         border: 1px solid #00f2ff; z-index:9999; font-family: monospace;
-                        padding: 10px; border-radius: 4px; font-size: 11px;">
-            <b style="letter-spacing: 1px;">HUD: MONITORING</b><hr style="border-color:#00f2ff; opacity:0.3;">
+                        padding: 10px; border-radius: 2px; box-shadow: 0 0 10px #00f2ff;">
+            <b style="letter-spacing: 2px;">SYS_STATUS: ACTIVE</b><hr style="border-color:#00f2ff; opacity:0.3;">
             <span style="color:#39FF14;">●</span> REFUGE_STAGING<br>
             <span style="color:#FF3131;">●</span> THREAT_MATRIX<br>
             <span style="color:#00f2ff;">—</span> SECTOR_LIMIT<br>
+            <br>
+            <small style="font-size: 8px; opacity: 0.5;">ENCRYPTION: ENABLED</small>
             </div>
             '''
             m.get_root().html.add_child(folium.Element(legend_html))
 
+            # Enable all layers to be selectable
             folium.LayerControl(position='topright', collapsed=False).add_to(m)
-            st_folium(m, width=None, height=650, use_container_width=True)
-         
-            # 7. RENDER COMMAND
-            st_data = st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
-
+            
+            st_folium(m, width=None, height=650, use_container_width=True, returned_objects=[])
     # ==========================================
     # G. ANALYTICS CHARTS (Inside Tab 2)
     # ==========================================
@@ -1196,6 +1113,7 @@ if uploaded_csv is not None:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
     
+
 
 
 

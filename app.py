@@ -186,11 +186,12 @@ def identify_daytime_refuges(df):
     day_df = df[(df['Hour'] >= 9) & (df['Hour'] <= 16)].copy()
     if day_df.empty: return pd.DataFrame()
 
-    # 2. Score based on Foraging signs (e.g., broken branches)
+    # 2. Score based on Foraging signs
     def calculate_score(row):
         score = 1.0
-        if row['Sighting Type'] == 'Direct': score = 2.0
-        if "brokenBranches" in str(row['Sighting Type Detail']): score += 0.5
+        if row['Sighting Type'] == 'Direct': score = 2.5
+        if "brokenBranches" in str(row['Sighting Type Detail']): score += 1.5
+        if "dung" in str(row['Sighting Type Detail']): score += 0.5
         return score
 
     day_df['Refuge_Weight'] = day_df.apply(calculate_score, axis=1)
@@ -203,7 +204,8 @@ def identify_daytime_refuges(df):
         'Longitude': 'mean'
     }).reset_index()
 
-    return refuge_summary.rename(columns={'Refuge_Weight': 'Persistence Score'}).sort_values('Persistence Score', ascending=False)
+    # Rename explicitly to 'Confidence' to match map call
+    return refuge_summary.rename(columns={'Refuge_Weight': 'Confidence'}).sort_values('Confidence', ascending=False)
 # ==========================================
 # 3. KML/GEOJSON PARSING (Map Layers)
 # ==========================================
@@ -1194,6 +1196,7 @@ if uploaded_csv is not None:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
     
+
 
 
 

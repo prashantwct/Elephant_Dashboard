@@ -840,6 +840,27 @@ if uploaded_csv is not None:
                         tooltip=f"<b>{v['Village']}</b>"
                     ).add_to(m)
 
+            # --- NEW: ADD DAYTIME REFUGE LAYER ---
+            refuge_summary = identify_daytime_refuges(df)
+            
+            if not refuge_summary.empty:
+                # Get coordinates for the Top 5 Refuges to place markers
+                # We merge back with the main df to get Lat/Lon for these beats
+                top_refuges = refuge_summary.head(5)['Beat'].tolist()
+                refuge_coords = df[df['Beat'].isin(top_refuges)].groupby('Beat').agg({
+                    'Latitude': 'mean',
+                    'Longitude': 'mean',
+                    'Persistence Score': 'first' # Assuming score is attached
+                }).reset_index()
+
+                for _, ref in refuge_coords.iterrows():
+                    folium.Marker(
+                        location=[ref['Latitude'], ref['Longitude']],
+                        icon=folium.Icon(color="green", icon="leaf", prefix="fa"),
+                        tooltip=f"<b>Daytime Refuge: {ref['Beat']}</b><br>Persistence Score: {ref['Persistence Score']:.2f}",
+                        popup=f"High-confidence staging area based on daytime foraging signs."
+                    ).add_to(m)
+
             # 6. Add Layer Control
             folium.LayerControl().add_to(m)
 
@@ -1197,3 +1218,4 @@ if uploaded_csv is not None:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
     
+

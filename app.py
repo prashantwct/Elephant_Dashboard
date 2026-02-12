@@ -674,7 +674,7 @@ if uploaded_csv is not None:
     # TABS CONFIGURATION
     # ==========================================
     st.divider()
-   tab_map, tab_charts, tab_refuge, tab_data, tab_staff = st.tabs([
+    tab_map, tab_charts, tab_refuge, tab_data, tab_staff = st.tabs([
     "🗺️ Live Map", "📊 Analytics", "🐘 Daytime Refuges", "📋 Data & Reports", "👥 Staff Registry"
 ])
     # ==========================================
@@ -1194,4 +1194,5 @@ if uploaded_csv is not None:
         st.info("💡 **Operational Insight:** Use this data to direct morning patrols toward these Beats, intercepting herds before they move toward agricultural fields at dusk.")
     else:
         st.warning("Insufficient daylight data (9 AM - 4 PM) within the selected filters to identify refuges.")
+
 

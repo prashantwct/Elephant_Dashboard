@@ -1033,7 +1033,49 @@ if uploaded_csv is not None:
                 file_name="Elephant_Monitoring_Report.html",
                 mime="text/html"
             )
+    # ==========================================
+    # H. DAYTIME REFUGE ANALYSIS (Inside Tab 3)
+    # ==========================================
+    with tab_refuge:
+        st.subheader("🐘 Predicted Daytime Refuges")
+        st.markdown("""
+        This analysis identifies **Staging Areas** where elephants spend daylight hours before moving into 
+        human-interest areas. It prioritizes locations with foraging signs (broken branches/dung) 
+        and no reported conflict during daylight hours.
+        """)
 
+        # Generate the refuge analysis
+        refuge_df = identify_daytime_refuges(df)
+
+        if not refuge_df.empty:
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                # Visualization of the top staging beats
+                fig_refuge = px.bar(
+                    refuge_df.head(10),
+                    x='Beat',
+                    y='Persistence Score',
+                    color='Avg Group Size',
+                    title="Top 10 Daytime Staging Beats (by Persistence Score)",
+                    hover_data=['Division', 'Range', 'Sighting Frequency'],
+                    color_continuous_scale='Greens'
+                )
+                st.plotly_chart(fig_refuge, use_container_width=True)
+
+            with col2:
+                # Metrics and Top Lists
+                st.metric("Primary Refuge Beat", refuge_df.iloc[0]['Beat'])
+                st.write("**High-Confidence Refuges**")
+                st.dataframe(
+                    refuge_df[['Division', 'Range', 'Beat', 'Persistence Score']].head(15),
+                    hide_index=True,
+                    use_container_width=True
+                )
+                
+            st.info("💡 **Operational Insight:** Use this data to direct morning patrols toward these Beats, intercepting herds before they move toward agricultural fields at dusk.")
+        else:
+            st.warning("Insufficient daylight data (9 AM - 4 PM) within the selected filters to identify refuges.")
     # ==========================================
     # J. USER REGISTRY ANALYTICS (Inside Tab 4)
     # ==========================================
@@ -1154,45 +1196,4 @@ if uploaded_csv is not None:
         else:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
-    with tab_refuge:
-    st.subheader("🐘 Predicted Daytime Refuges")
-    st.markdown("""
-    This analysis identifies **Staging Areas** where elephants spend daylight hours before moving into 
-    human-interest areas. It prioritizes locations with foraging signs (broken branches/dung) 
-    and no reported conflict during daylight hours.
-    """)
-
-    # Generate the refuge analysis
-    refuge_df = identify_daytime_refuges(df)
-
-    if not refuge_df.empty:
-        col1, col2 = st.columns([2, 1])
-
-        with col1:
-            # Visualization of the top staging beats
-            fig_refuge = px.bar(
-                refuge_df.head(10),
-                x='Beat',
-                y='Persistence Score',
-                color='Avg Group Size',
-                title="Top 10 Daytime Staging Beats (by Persistence Score)",
-                hover_data=['Division', 'Range', 'Sighting Frequency'],
-                color_continuous_scale='Greens'
-            )
-            st.plotly_chart(fig_refuge, use_container_width=True)
-
-        with col2:
-            # Metrics and Top Lists
-            st.metric("Primary Refuge Beat", refuge_df.iloc[0]['Beat'])
-            st.write("**High-Confidence Refuges**")
-            st.dataframe(
-                refuge_df[['Division', 'Range', 'Beat', 'Persistence Score']].head(15),
-                hide_index=True,
-                use_container_width=True
-            )
-            
-        st.info("💡 **Operational Insight:** Use this data to direct morning patrols toward these Beats, intercepting herds before they move toward agricultural fields at dusk.")
-    else:
-        st.warning("Insufficient daylight data (9 AM - 4 PM) within the selected filters to identify refuges.")
-
-
+    

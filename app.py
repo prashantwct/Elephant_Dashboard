@@ -740,90 +740,74 @@ if uploaded_csv is not None:
                         st.rerun()
 
         # --- LEFT COLUMN: MAP ---
-        with c_map:
-            m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="OpenStreetMap")
+       with c_map:
+            # Base Map: Set to Dark Matter for a techy baseline
+            m = folium.Map(location=map_center, zoom_start=map_zoom, tiles="CartoDB dark_matter")
 
-            # 1. Base Layer Toggle
+            # --- SATELLITE & BASE LAYERS ---
             folium.TileLayer(
                 tiles='https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
-                attr='Google', name='Google Hybrid', overlay=False
+                attr='Google', name='🛰️ Satellite Hybrid', overlay=False
             ).add_to(m)
+            
+            folium.TileLayer('CartoDB dark_matter', name='🌃 Tactical Dark', overlay=False).add_to(m)
 
-            # 2. Layer: Boundaries
-            boundary_layer = folium.FeatureGroup(name="🗺️ Region Boundaries", show=True)
+            # --- LAYER: SECTOR BOUNDARIES (Glow Effect) ---
+            boundary_layer = folium.FeatureGroup(name="🛰️ Sector Boundaries", show=True)
             if geojson_features:
                 folium.GeoJson(
                     data={"type": "FeatureCollection", "features": geojson_features},
-                    style_function=lambda x: {'fillColor': '#3388ff', 'color': '#3388ff', 'weight': 1, 'fillOpacity': 0.1},
-                    tooltip=folium.GeoJsonTooltip(fields=['name'], aliases=['Region:'])
+                    style_function=lambda x: {
+                        'fillColor': '#00f2ff', 'color': '#00f2ff', 
+                        'weight': 1, 'fillOpacity': 0.05
+                    }
                 ).add_to(boundary_layer)
             boundary_layer.add_to(m)
 
-            # 3. Layer: Sightings & Heatmap
-            sightings_layer = folium.FeatureGroup(name="👁️ Sighting Activity", show=True)
-            if map_mode == "Heatmap":
-                heat_data = [[r['Latitude'], r['Longitude'], max(r['Severity Score'], 1)] for _, r in displayed_map_df.iterrows()]
-                HeatMap(heat_data, radius=15, blur=10).add_to(sightings_layer)
-            else:
-                for _, row in displayed_map_df.iterrows():
-                    # Logic for color and radius based on Severity Score 
-                    color = 'blue'; radius = 4
-                    s = row['Severity Score']
-                    if s >= 20: color='darkred'; radius=10
-                    elif s >= 5: color='red'; radius=8
-                    elif s >= 2.5: color='orange'; radius=6
-                    
-                    folium.CircleMarker(
-                        [row['Latitude'], row['Longitude']],
-                        radius=radius, color=color, fill=True, fill_opacity=0.7,
-                        tooltip=f"Beat: {row['Beat']} | Date: {row['Date'].date()}"
-                    ).add_to(sightings_layer)
-            sightings_layer.add_to(m)
-
-            # 4. Layer: Daytime Refuges
-            refuge_layer = folium.FeatureGroup(name="🐘 Daytime Refuges (Staging)", show=False)
+            # --- LAYER: DAYTIME REFUGES (Neon Green Glow) ---
+            refuge_layer = folium.FeatureGroup(name="🔋 Active Refuges", show=True)
             ref_df = identify_daytime_refuges(df)
             if not ref_df.empty:
-                for _, ref in ref_df.head(10).iterrows():
-                    folium.Marker(
+                for _, ref in ref_df.head(15).iterrows():
+                    # Main Node
+                    folium.CircleMarker(
                         location=[ref['Latitude'], ref['Longitude']],
-                        icon=folium.Icon(color="green", icon="leaf", prefix="fa"),
-                        tooltip=f"<b>Refuge: {ref['Beat']}</b><br>Score: {ref['Persistence Score']:.1f}"
+                        radius=ref['Confidence'] * 1.5,
+                        color='#39FF14', fill=True, fill_color='#39FF14', fill_opacity=0.4,
+                        tooltip=f"<b>REFUGE DETECTED</b><br>Beat: {ref['Beat']}<br>Confidence: {ref['Confidence']:.1f}"
                     ).add_to(refuge_layer)
             refuge_layer.add_to(m)
 
-            # 5. Layer: Risk Villages
-            village_layer = folium.FeatureGroup(name="🏘️ Risk Villages", show=True)
-            if village_df is not None:
-                for v in risk_villages:
-                    folium.Circle(
-                        location=[v['Lat'], v['Lon']], radius=v['Radius'],
-                        color=v['Color'], fill=True, fill_opacity=0.15,
-                        tooltip=f"Village: {v['Village']}"
-                    ).add_to(village_layer)
-                    folium.Marker(
-                        location=[v['Lat'], v['Lon']],
-                        icon=folium.Icon(color="red" if v['Color']=='red' else "orange", icon="home", prefix="fa")
-                    ).add_to(village_layer)
-            village_layer.add_to(m)
+            # --- LAYER: THREAT MATRIX (Red Pulse for Conflict) ---
+            threat_layer = folium.FeatureGroup(name="⚠️ Threat Matrix", show=True)
+            threat_data = displayed_map_df[displayed_map_df['Severity Score'] > 1]
+            for _, row in threat_data.iterrows():
+                folium.CircleMarker(
+                    location=[row['Latitude'], row['Longitude']],
+                    radius=8, color='#FF3131', fill=True, fill_color='#FF3131', fill_opacity=0.8,
+                    popup=f"SEVERITY: {row['Severity Score']}"
+                ).add_to(threat_layer)
+            threat_layer.add_to(m)
 
-            # 6. Final Layer Control & Legend
-            folium.LayerControl(collapsed=False).add_to(m)
-
-            # Floating Legend
+            # --- CSS FLOATING COMMAND LEGEND ---
             legend_html = '''
-            <div style="position: fixed; bottom: 50px; left: 50px; width: 160px; height: 130px; 
-                        background-color: white; border:2px solid grey; z-index:9999; font-size:12px;
-                        padding: 10px; border-radius: 5px;">
-            <b>Legend</b><br>
-            <i class="fa fa-leaf" style="color:green"></i> Refuge<br>
-            <i class="fa fa-home" style="color:red"></i> Village<br>
-            <i class="fa fa-circle" style="color:blue"></i> Sighting
+            <div style="position: fixed; bottom: 30px; left: 30px; width: 220px; 
+                        background: rgba(10, 10, 10, 0.85); color: #00f2ff; 
+                        border: 1px solid #00f2ff; z-index:9999; font-family: 'Courier New', monospace;
+                        padding: 15px; border-radius: 4px; box-shadow: 0 0 15px rgba(0, 242, 255, 0.4);">
+            <b style="letter-spacing: 2px;">SYS_COMMAND: ACTIVE</b><hr style="border-color:#00f2ff; opacity:0.3;">
+            <span style="color:#39FF14; text-shadow: 0 0 5px #39FF14;">●</span> REFUGE_STAGING<br>
+            <span style="color:#FF3131; text-shadow: 0 0 5px #FF3131;">●</span> THREAT_INCIDENT<br>
+            <span style="color:#00f2ff;">—</span> SECTOR_BOUNDARY<br>
+            <br>
+            <small style="font-size: 9px; opacity: 0.6;">COORD_REF: WGS84</small><br>
+            <small style="font-size: 9px; opacity: 0.6;">STATUS: MONITORING...</small>
             </div>
             '''
             m.get_root().html.add_child(folium.Element(legend_html))
 
-            st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
+            folium.LayerControl(position='topright', collapsed=False).add_to(m)
+            st_folium(m, width=None, height=650, use_container_width=True)
          
             # 7. RENDER COMMAND
             st_data = st_folium(m, width=None, height=600, use_container_width=True, returned_objects=[])
@@ -1179,6 +1163,7 @@ if uploaded_csv is not None:
             st.info("👆 Upload 'Staff List' CSV in the sidebar to view Staff Analytics.")
 
     
+
 
 
 

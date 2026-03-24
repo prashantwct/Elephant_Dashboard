@@ -46,6 +46,7 @@ from spatial_analytics import (
     calculate_affected_villages,
     identify_risk_villages,
     identify_daytime_refuges,
+    infer_refuges_from_conflict_proximity,
 )
 
 logging.basicConfig(level=logging.WARNING)
@@ -162,6 +163,12 @@ def cached_identify_risk_villages(sightings_hash, sightings_df, villages_df,
 def cached_identify_daytime_refuges(sightings_hash, df):
     """Cache wrapper for refuge detection."""
     return identify_daytime_refuges(df)
+
+
+@st.cache_data
+def cached_infer_refuges_from_conflict_proximity(sightings_hash, df, search_radius_km, grid_res_km):
+    """Cache wrapper for spatial conflict-proximity refuge inference."""
+    return infer_refuges_from_conflict_proximity(df, search_radius_km, grid_res_km)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -789,50 +796,228 @@ if uploaded_csv is not None:
 
     # ── TAB 3: DAYTIME REFUGES ────────────────────────────────
     with tab_refuge:
-        st.subheader("🐘 Predicted Daytime Refuges")
-        st.markdown(
-            "Identifies **Staging Areas** where elephants spend daylight hours "
-            f"({config.REFUGE_DAY_START_HOUR}:00–{config.REFUGE_DAY_END_HOUR}:00) "
-            "before moving toward human-occupied areas. "
-            "Prioritises locations with foraging signs (broken branches, dung) "
-            "and low conflict scores."
+        st.subheader("🐘 Daytime Refuge Analysis")
+
+        # ── Mode selector ─────────────────────────────────────
+        refuge_mode = st.radio(
+            "Analysis mode",
+            ["📋 Entry-based (logged sightings)", "🗺️ Spatial inference (conflict proximity)"],
+            horizontal=True,
+            key="refuge_mode",
         )
 
-        refuge_df = cached_identify_daytime_refuges(_hash, df)
+        st.divider()
 
-        if not refuge_df.empty:
-            col1, col2 = st.columns([2, 1])
-
-            with col1:
-                fig_refuge = px.bar(
-                    refuge_df.head(10),
-                    x="Beat",
-                    y="Persistence Score",
-                    color="Avg Group Size",
-                    title="Top 10 Daytime Staging Beats (by Persistence Score)",
-                    hover_data=["Division", "Range", "Sighting Frequency"],
-                    color_continuous_scale="Greens",
-                )
-                st.plotly_chart(fig_refuge, use_container_width=True)
-
-            with col2:
-                st.metric("Primary Refuge Beat", refuge_df.iloc[0]["Beat"])
-                st.write("**High-Confidence Refuges**")
-                st.dataframe(
-                    refuge_df[["Division", "Range", "Beat", "Persistence Score"]].head(15),
-                    hide_index=True,
-                    use_container_width=True,
-                )
-
-            st.info(
-                "💡 **Operational Insight:** Direct morning patrols toward these Beats "
-                "to intercept herds before they move toward agricultural fields at dusk."
+        # ══════════════════════════════════════════════════════
+        # MODE A: Entry-based (original logic)
+        # ══════════════════════════════════════════════════════
+        if refuge_mode == "📋 Entry-based (logged sightings)":
+            st.markdown(
+                "Identifies staging beats from **logged field entries** during daylight hours "
+                f"({config.REFUGE_DAY_START_HOUR}:00–{config.REFUGE_DAY_END_HOUR}:00) "
+                "with low conflict scores. Prioritises foraging signs (broken branches, dung). "
+                "Only beats with actual sighting records appear here."
             )
+
+            refuge_df = cached_identify_daytime_refuges(_hash, df)
+
+            if not refuge_df.empty:
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    fig_refuge = px.bar(
+                        refuge_df.head(10),
+                        x="Beat",
+                        y="Persistence Score",
+                        color="Avg Group Size",
+                        title="Top 10 Daytime Staging Beats (by Persistence Score)",
+                        hover_data=["Division", "Range", "Sighting Frequency"],
+                        color_continuous_scale="Greens",
+                    )
+                    st.plotly_chart(fig_refuge, use_container_width=True)
+
+                with col2:
+                    st.metric("Primary Refuge Beat", refuge_df.iloc[0]["Beat"])
+                    st.write("**High-Confidence Refuges**")
+                    st.dataframe(
+                        refuge_df[["Division", "Range", "Beat", "Persistence Score"]].head(15),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+
+                st.info(
+                    "💡 **Operational Insight:** Direct morning patrols toward these Beats "
+                    "to intercept herds before they move toward agricultural fields at dusk."
+                )
+            else:
+                st.warning(
+                    f"Insufficient daylight data ({config.REFUGE_DAY_START_HOUR}:00–"
+                    f"{config.REFUGE_DAY_END_HOUR}:00) within the selected filters to identify refuges."
+                )
+
+        # ══════════════════════════════════════════════════════
+        # MODE B: Spatial inference from conflict proximity
+        # ══════════════════════════════════════════════════════
         else:
-            st.warning(
-                f"Insufficient daylight data ({config.REFUGE_DAY_START_HOUR}:00–"
-                f"{config.REFUGE_DAY_END_HOUR}:00) within the selected filters to identify refuges."
+            st.markdown(
+                "Infers likely refuge zones **purely from spatial relationships** — "
+                "no daytime field entry is required at the candidate location. "
+                "The model finds areas within striking distance of conflict sites "
+                "that are *not* themselves conflict zones, ranking them by how much "
+                "accumulated conflict pressure surrounds them. "
+                "Logged daytime observations (if any) add a secondary boost."
             )
+
+            with st.expander("⚙️ Inference parameters", expanded=False):
+                col_p1, col_p2 = st.columns(2)
+                search_radius_km = col_p1.slider(
+                    "Search radius around conflicts (km)",
+                    min_value=2.0, max_value=20.0,
+                    value=config.REFUGE_CONFLICT_SEARCH_RADIUS_KM,
+                    step=0.5, key="inf_search_radius",
+                    help="How far from a conflict event to look for refuge zones.",
+                )
+                grid_res_km = col_p2.slider(
+                    "Grid resolution (km)",
+                    min_value=0.25, max_value=2.0,
+                    value=config.REFUGE_SPATIAL_GRID_RESOLUTION_KM,
+                    step=0.25, key="inf_grid_res",
+                    help="Smaller = finer map, slower compute.",
+                )
+                top_n = col_p1.slider(
+                    "Top N candidate zones to show",
+                    min_value=5, max_value=50, value=20, step=5,
+                    key="inf_top_n",
+                )
+
+            infer_hash = f"{_hash}_{search_radius_km}_{grid_res_km}"
+            with st.spinner("Running spatial inference…"):
+                inf_df = cached_infer_refuges_from_conflict_proximity(
+                    infer_hash, df, search_radius_km, grid_res_km
+                )
+
+            if inf_df.empty:
+                st.warning(
+                    "No conflict events found in the filtered data — "
+                    "spatial inference requires at least one crop/house/injury record."
+                )
+            else:
+                top_inf = inf_df.head(top_n).copy()
+
+                # ── Summary metrics ───────────────────────────
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Candidate zones identified", len(inf_df))
+                m2.metric(
+                    "Top zone — nearest beat",
+                    top_inf.iloc[0]["Nearest Beat"],
+                    help="Beat closest to the highest-scoring inferred refuge zone."
+                )
+                m3.metric(
+                    "Avg conflicts nearby (top zone)",
+                    f"{top_inf.iloc[0]['Nearby Conflict Count']:.0f}",
+                )
+
+                st.divider()
+
+                # ── Scatter map ───────────────────────────────
+                st.markdown("**Inferred refuge zone map** — colour = Combined Score, size = Nearby Conflict Severity")
+                conflict_pts = df[
+                    (df["Crop Damage"] > 0) | (df["House Damage"] > 0) | (df["Injury"] > 0)
+                ][["Latitude", "Longitude", "Severity Score"]].copy()
+                conflict_pts["_type"] = "Conflict Site"
+                top_inf_plot = top_inf.rename(columns={
+                    "Combined Score":           "Severity Score",
+                    "Nearby Conflict Severity": "_size",
+                }).copy()
+                top_inf_plot["_type"] = "Inferred Refuge"
+
+                fig_map = px.scatter_mapbox(
+                    top_inf,
+                    lat="Latitude", lon="Longitude",
+                    color="Combined Score",
+                    size="Nearby Conflict Severity",
+                    hover_name="Nearest Beat",
+                    hover_data={
+                        "Nearby Conflict Count":      True,
+                        "Nearby Conflict Severity":   True,
+                        "Observation Boost":          True,
+                        "Nearest Beat Distance (km)": True,
+                        "Latitude":                   False,
+                        "Longitude":                  False,
+                    },
+                    color_continuous_scale="YlOrRd",
+                    size_max=20,
+                    zoom=9,
+                    center={
+                        "lat": float(top_inf["Latitude"].mean()),
+                        "lon": float(top_inf["Longitude"].mean()),
+                    },
+                    mapbox_style="carto-darkmatter",
+                    title=f"Top {top_n} Inferred Refuge Zones (conflict proximity model)",
+                )
+
+                # Overlay conflict sites as fixed grey markers
+                if not conflict_pts.empty:
+                    fig_map.add_scattermapbox(
+                        lat=conflict_pts["Latitude"],
+                        lon=conflict_pts["Longitude"],
+                        mode="markers",
+                        marker=dict(size=8, color="#FF3131", opacity=0.7),
+                        name="Conflict sites",
+                        hovertext=conflict_pts["Severity Score"].apply(
+                            lambda s: f"Conflict severity: {s:.1f}"
+                        ),
+                        hoverinfo="text",
+                    )
+
+                fig_map.update_layout(
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    height=500,
+                    legend=dict(
+                        bgcolor="rgba(20,20,20,0.7)",
+                        font=dict(color="white"),
+                    ),
+                )
+                st.plotly_chart(fig_map, use_container_width=True)
+
+                # ── Score breakdown chart ─────────────────────
+                st.markdown("**Score breakdown** — attraction vs observational evidence")
+                fig_scores = px.scatter(
+                    top_inf,
+                    x="Conflict Attraction Score",
+                    y="Observation Boost",
+                    color="Combined Score",
+                    size="Nearby Conflict Count",
+                    hover_name="Nearest Beat",
+                    color_continuous_scale="YlOrRd",
+                    title="Attraction vs Observation (bubble size = nearby conflict count)",
+                    labels={
+                        "Conflict Attraction Score": "Conflict Attraction Score (spatial)",
+                        "Observation Boost":         "Observation Boost (logged entries)",
+                    },
+                )
+                st.plotly_chart(fig_scores, use_container_width=True)
+
+                # ── Detail table ──────────────────────────────
+                st.markdown("**Candidate zone details**")
+                display_cols = [
+                    "Nearest Beat", "Nearest Beat Distance (km)",
+                    "Conflict Attraction Score", "Observation Boost", "Combined Score",
+                    "Nearby Conflict Count", "Nearby Conflict Severity",
+                    "Latitude", "Longitude",
+                ]
+                st.dataframe(
+                    top_inf[display_cols]
+                    .style.background_gradient(subset=["Combined Score"], cmap="YlOrRd"),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.info(
+                    "💡 **Operational Insight:** High-scoring zones that have **low Observation Boost** "
+                    "are areas the model believes are used as refuges but rangers have *not yet surveyed*. "
+                    "These are the highest-priority locations for new morning patrol routes."
+                )
 
     # ── TAB 4: DATA & REPORTS ─────────────────────────────────
     with tab_data:

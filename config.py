@@ -43,6 +43,12 @@ REFUGE_DAY_START_HOUR = 9
 REFUGE_DAY_END_HOUR   = 16
 REFUGE_MAX_SEVERITY   = 1     # only low-conflict sightings qualify
 
+# ── Spatial Refuge Inference from Conflict Proximity ─────────
+# How far from a conflict site to search for likely refuge zones
+REFUGE_CONFLICT_SEARCH_RADIUS_KM   = 8.0
+# Grid cell size for the inference heatmap (smaller = finer, slower)
+REFUGE_SPATIAL_GRID_RESOLUTION_KM  = 0.5
+
 # ── KML/KMZ Parsing ──────────────────────────────────────────
 KML_IGNORED_NAMES = {"BTR", "SATNA", "0", "1", "NONE", "UNKNOWN"}
 

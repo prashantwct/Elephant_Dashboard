@@ -439,17 +439,17 @@ if uploaded_csv is not None:
     st.markdown("### 📈 Operational Overview")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
 
-    def _metric_btn(col, label, value, filter_val):
+    def _metric_btn(col, label, value, filter_val, btn_key):
         col.metric(label, value)
-        if col.button("View on map", key=f"btn_{filter_val}"):
+        if col.button("View on map", key=btn_key):
             st.session_state.map_filter = filter_val
 
-    _metric_btn(c1, "📝 Entries",    n_sightings,  "All")
-    _metric_btn(c2, "🐾 Cumulative", n_cumulative, "All")
-    _metric_btn(c3, "👁️ Direct",     n_direct,     "Direct")
-    _metric_btn(c4, "🔥 Conflicts",  n_conflict_events, "Conflict")
-    _metric_btn(c5, "♂️ Males",      n_males,      "Males")
-    _metric_btn(c6, "👶 Calves",     n_calves,     "Calves")
+    _metric_btn(c1, "📝 Entries",    n_sightings,       "All",      "btn_entries")
+    _metric_btn(c2, "🐾 Cumulative", n_cumulative,      "All",      "btn_cumulative")
+    _metric_btn(c3, "👁️ Direct",     n_direct,          "Direct",   "btn_direct")
+    _metric_btn(c4, "🔥 Conflicts",  n_conflict_events, "Conflict", "btn_conflict")
+    _metric_btn(c5, "♂️ Males",      n_males,           "Males",    "btn_males")
+    _metric_btn(c6, "👶 Calves",     n_calves,          "Calves",   "btn_calves")
 
     # ── E. STRATEGIC INDICATORS (Row 2) ───────────────────────
     st.markdown("### 🛡️ Strategic Indicators")

@@ -47,6 +47,7 @@ from spatial_analytics import (
     identify_risk_villages,
     identify_daytime_refuges,
     infer_refuges_from_conflict_proximity,
+    classify_herds,
 )
 
 logging.basicConfig(level=logging.WARNING)
@@ -169,6 +170,12 @@ def cached_identify_daytime_refuges(sightings_hash, df):
 def cached_infer_refuges_from_conflict_proximity(sightings_hash, df, search_radius_km, grid_res_km):
     """Cache wrapper for spatial conflict-proximity refuge inference."""
     return infer_refuges_from_conflict_proximity(df, search_radius_km, grid_res_km)
+
+
+@st.cache_data
+def cached_classify_herds(sightings_hash, df, spatial_gap_km, temporal_gap_hours, min_size):
+    """Cache wrapper for herd classification."""
+    return classify_herds(df, spatial_gap_km, temporal_gap_hours, min_size)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -450,6 +457,7 @@ if uploaded_csv is not None:
         col.metric(label, value)
         if col.button("View on map", key=btn_key):
             st.session_state.map_filter = filter_val
+            st.rerun()
 
     _metric_btn(c1, "📝 Entries",    n_sightings,       "All",      "btn_entries")
     _metric_btn(c2, "🐾 Cumulative", n_cumulative,      "All",      "btn_cumulative")
@@ -469,6 +477,7 @@ if uploaded_csv is not None:
     k1.metric("🚨 Severity Score", f"{curr_sev:.1f}", delta=f"{curr_sev - prev_sev:+.1f}")
     if k1.button("View severity map", key="btn_sev"):
         st.session_state.map_filter = "Severity_View"
+        st.rerun()
 
     curr_hec = (n_conflict_events / n_sightings * 100) if n_sightings > 0 else 0
     prev_conf = int(((df_prev["Crop Damage"] > 0) | (df_prev["House Damage"] > 0) | (df_prev["Injury"] > 0)).sum())
@@ -476,6 +485,7 @@ if uploaded_csv is not None:
     k2.metric("⚠️ HEC Ratio", f"{curr_hec:.1f}%", delta=f"{curr_hec - prev_hec:+.1f}%")
     if k2.button("View conflict map", key="btn_hec"):
         st.session_state.map_filter = "Conflict"
+        st.rerun()
 
     valid_hours   = df[df["Hour"] != -1]
     curr_night    = (valid_hours["Is_Night"].sum() / len(valid_hours) * 100) if len(valid_hours) > 0 else 0
@@ -484,6 +494,7 @@ if uploaded_csv is not None:
     k3.metric("🌙 Night Activity", f"{curr_night:.1f}%", delta=f"{curr_night - prev_night:+.1f}%")
     if k3.button("View night map", key="btn_night"):
         st.session_state.map_filter = "Night_View"
+        st.rerun()
 
     if not df.empty:
         beat_stats = df.groupby("Beat")["Severity Score"].sum().reset_index()
@@ -496,6 +507,7 @@ if uploaded_csv is not None:
     k4.metric("🔁 Hotspot Beat", top_beat)
     if k4.button("Focus hotspot", key="btn_hotspot"):
         st.session_state.map_filter = "Hotspot_View"
+        st.rerun()
 
     # Single explanation panel (was duplicated)
     filter_labels = {
@@ -514,8 +526,8 @@ if uploaded_csv is not None:
     # ══════════════════════════════════════════════════════════
 
     st.divider()
-    tab_map, tab_charts, tab_refuge, tab_data, tab_staff = st.tabs([
-        "🗺️ Live Map", "📊 Analytics", "🐘 Daytime Refuges", "📋 Data & Reports", "👥 Staff Registry"
+    tab_map, tab_charts, tab_refuge, tab_herds, tab_data, tab_staff = st.tabs([
+        "🗺️ Live Map", "📊 Analytics", "🐘 Daytime Refuges", "🐘 Herd Classification", "📋 Data & Reports", "👥 Staff Registry"
     ])
 
     # ── TAB 1: MAP ────────────────────────────────────────────
@@ -559,7 +571,36 @@ if uploaded_csv is not None:
             else:
                 map_center = config.DEFAULT_MAP_CENTER
 
-            m = folium.Map(location=map_center, zoom_start=config.DEFAULT_MAP_ZOOM,
+            # ── Apply map_filter to select which rows to plot ──
+            active_filter = st.session_state.map_filter
+            if active_filter == "Direct":
+                plot_df = map_df[map_df.get("Sighting Type", pd.Series()) == "Direct"] \
+                          if "Sighting Type" in map_df.columns else map_df
+            elif active_filter == "Conflict":
+                plot_df = map_df[
+                    (map_df["Crop Damage"] > 0) |
+                    (map_df["House Damage"] > 0) |
+                    (map_df["Injury"] > 0)
+                ]
+            elif active_filter == "Males":
+                plot_df = map_df[map_df["Male Count"] > 0]
+            elif active_filter == "Calves":
+                plot_df = map_df[map_df["Calf Count"] > 0]
+            elif active_filter == "Night_View":
+                plot_df = map_df[map_df["Is_Night"] == 1]
+            elif active_filter == "Hotspot_View" and st.session_state.hotspot_beat:
+                plot_df = map_df[map_df["Beat"] == st.session_state.hotspot_beat]
+            else:
+                plot_df = map_df  # All / Severity_View uses all rows
+
+            # Re-centre on filtered subset when a specific filter is active
+            if active_filter not in ("All", None) and not plot_df.empty:
+                map_center = [plot_df["Latitude"].mean(), plot_df["Longitude"].mean()]
+                zoom = 11  # zoom in on the filtered area
+            else:
+                zoom = config.DEFAULT_MAP_ZOOM
+
+            m = folium.Map(location=map_center, zoom_start=zoom,
                            tiles="CartoDB dark_matter")
 
             folium.TileLayer(
@@ -571,6 +612,7 @@ if uploaded_csv is not None:
             sector_grp = folium.FeatureGroup(name="🗺️ Sector Boundaries", show=True).add_to(m)
             refuge_grp = folium.FeatureGroup(name="🟢 Active Refuges",    show=True).add_to(m)
             threat_grp = folium.FeatureGroup(name="🚨 Threat Matrix",     show=True).add_to(m)
+            filter_grp = folium.FeatureGroup(name="🔎 Filtered View",     show=True).add_to(m)
 
             if geojson_features:
                 folium.GeoJson(
@@ -592,6 +634,7 @@ if uploaded_csv is not None:
                         tooltip=f"<b>REFUGE: {ref['Beat']}</b>",
                     ).add_to(refuge_grp)
 
+            # Always show high-severity threats
             for _, row in map_df[map_df["Severity Score"] > 5].iterrows():
                 folium.CircleMarker(
                     location=[row["Latitude"], row["Longitude"]],
@@ -600,8 +643,71 @@ if uploaded_csv is not None:
                     popup=f"SEVERITY: {row['Severity Score']}",
                 ).add_to(threat_grp)
 
+            # ── Render filtered markers ────────────────────────
+            if active_filter == "Severity_View":
+                # Size markers proportional to severity score
+                for _, row in plot_df.iterrows():
+                    r = max(4, min(20, row["Severity Score"] * 1.5))
+                    folium.CircleMarker(
+                        location=[row["Latitude"], row["Longitude"]],
+                        radius=r, color="#FF3131", fill=True,
+                        fill_color="#FF3131",
+                        fill_opacity=0.6,
+                        tooltip=f"Severity: {row['Severity Score']:.1f} | {row.get('Beat','')}"
+                    ).add_to(filter_grp)
+            elif active_filter == "Night_View":
+                for _, row in plot_df.iterrows():
+                    folium.CircleMarker(
+                        location=[row["Latitude"], row["Longitude"]],
+                        radius=6, color="#9B59B6", fill=True,
+                        fill_color="#9B59B6", fill_opacity=0.7,
+                        tooltip=f"Hour: {row['Hour']}:00 | {row.get('Beat','')}"
+                    ).add_to(filter_grp)
+            elif active_filter == "Conflict":
+                for _, row in plot_df.iterrows():
+                    tip = (f"Crop: {int(row['Crop Damage'])} | "
+                           f"House: {int(row['House Damage'])} | "
+                           f"Injury: {int(row['Injury'])} | {row.get('Beat','')}")
+                    folium.CircleMarker(
+                        location=[row["Latitude"], row["Longitude"]],
+                        radius=9, color="#FF3131", fill=True,
+                        fill_color="#FF6B35", fill_opacity=0.85,
+                        tooltip=tip
+                    ).add_to(filter_grp)
+            elif active_filter in ("Direct", "Males", "Calves"):
+                color_map = {"Direct": "#00f2ff", "Males": "#1f77b4", "Calves": "#2ca02c"}
+                c = color_map.get(active_filter, "#ffffff")
+                for _, row in plot_df.iterrows():
+                    folium.CircleMarker(
+                        location=[row["Latitude"], row["Longitude"]],
+                        radius=6, color=c, fill=True,
+                        fill_color=c, fill_opacity=0.75,
+                        tooltip=f"{active_filter} | Count: {int(row['Total Count'])} | {row.get('Beat','')}"
+                    ).add_to(filter_grp)
+            elif active_filter == "Hotspot_View":
+                for _, row in plot_df.iterrows():
+                    folium.CircleMarker(
+                        location=[row["Latitude"], row["Longitude"]],
+                        radius=7, color="#EF9F27", fill=True,
+                        fill_color="#EF9F27", fill_opacity=0.8,
+                        tooltip=f"Beat: {row.get('Beat','')} | Severity: {row['Severity Score']:.1f}"
+                    ).add_to(filter_grp)
+            else:
+                # All — use heatmap or pins based on sidebar setting
+                if map_mode == "Heatmap" and not plot_df.empty:
+                    heat_data = plot_df[["Latitude", "Longitude"]].dropna().values.tolist()
+                    HeatMap(heat_data, radius=15, blur=20).add_to(filter_grp)
+                else:
+                    for _, row in plot_df.iterrows():
+                        folium.CircleMarker(
+                            location=[row["Latitude"], row["Longitude"]],
+                            radius=5, color="#00f2ff", fill=True,
+                            fill_color="#00f2ff", fill_opacity=0.5,
+                            tooltip=f"{row.get('Beat','')} | {row.get('Sighting Type','')}"
+                        ).add_to(filter_grp)
+
             legend_html = """
-            <div style="position:fixed;bottom:30px;left:30px;width:180px;
+            <div style="position:fixed;bottom:30px;left:30px;width:185px;
                         background:rgba(15,15,15,0.85);color:#00f2ff;
                         border:1px solid #00f2ff;z-index:9999;
                         font-family:'Courier New',monospace;
@@ -610,6 +716,8 @@ if uploaded_csv is not None:
             <hr style="border-color:#00f2ff;opacity:.3;">
             <span style="color:#39FF14;">●</span> REFUGE_DETECTED<br>
             <span style="color:#FF3131;">●</span> THREAT_INCIDENT<br>
+            <span style="color:#9B59B6;">●</span> NIGHT_ACTIVITY<br>
+            <span style="color:#EF9F27;">●</span> HOTSPOT_BEAT<br>
             <span style="color:#00f2ff;">—</span> SECTOR_LIMIT
             </div>"""
             m.get_root().html.add_child(folium.Element(legend_html))
@@ -910,78 +1018,123 @@ if uploaded_csv is not None:
                 m2.metric(
                     "Top zone — nearest beat",
                     top_inf.iloc[0]["Nearest Beat"],
-                    help="Beat closest to the highest-scoring inferred refuge zone."
                 )
                 m3.metric(
-                    "Avg conflicts nearby (top zone)",
+                    "Conflicts near top zone",
                     f"{top_inf.iloc[0]['Nearby Conflict Count']:.0f}",
                 )
 
                 st.divider()
 
-                # ── Scatter map ───────────────────────────────
-                st.markdown("**Inferred refuge zone map** — colour = Combined Score, size = Nearby Conflict Severity")
+                # ── How to read this ──────────────────────────
+                with st.expander("📖 How to read this analysis", expanded=True):
+                    st.markdown("""
+**What the model does:**
+It draws a grid across the landscape around every conflict site and scores each cell based on:
+- How many conflict events are nearby (crop raids, house damage, injuries)
+- How severe those conflicts are (weighted by type)
+- Whether the cell itself is a conflict site — if yes, score is reduced 80% (elephants don't rest where they raid)
+- Whether any ranger actually logged a daytime observation nearby (adds a 30% boost)
+
+**How to interpret the map:**
+- 🔴 **Red dots** = actual conflict sites (crop/house/injury events in your data)
+- 🟡→🟠 **Yellow-orange circles** = inferred refuge zones ranked by Combined Score
+- **Circle size** = total severity of nearby conflicts (bigger = more pressure around that zone)
+- **Colour intensity** = Combined Score (darker = higher confidence this is a refuge)
+
+**What to do with it:**
+Zones with **high Combined Score but zero Observation Boost** are unsurveyed areas the model flags as likely refuges. These are your highest-priority new morning patrol locations.
+                    """)
+
+                # ── Interactive Folium map ────────────────────
+                st.markdown("**Interactive refuge zone map** — zoom, click markers for details")
+
                 conflict_pts = df[
                     (df["Crop Damage"] > 0) | (df["House Damage"] > 0) | (df["Injury"] > 0)
-                ][["Latitude", "Longitude", "Severity Score"]].copy()
-                conflict_pts["_type"] = "Conflict Site"
-                top_inf_plot = top_inf.rename(columns={
-                    "Combined Score":           "Severity Score",
-                    "Nearby Conflict Severity": "_size",
-                }).copy()
-                top_inf_plot["_type"] = "Inferred Refuge"
+                ].copy()
 
-                fig_map = px.scatter_mapbox(
-                    top_inf,
-                    lat="Latitude", lon="Longitude",
-                    color="Combined Score",
-                    size="Nearby Conflict Severity",
-                    hover_name="Nearest Beat",
-                    hover_data={
-                        "Nearby Conflict Count":      True,
-                        "Nearby Conflict Severity":   True,
-                        "Observation Boost":          True,
-                        "Nearest Beat Distance (km)": True,
-                        "Latitude":                   False,
-                        "Longitude":                  False,
-                    },
-                    color_continuous_scale="YlOrRd",
-                    size_max=20,
-                    zoom=9,
-                    center={
-                        "lat": float(top_inf["Latitude"].mean()),
-                        "lon": float(top_inf["Longitude"].mean()),
-                    },
-                    mapbox_style="carto-darkmatter",
-                    title=f"Top {top_n} Inferred Refuge Zones (conflict proximity model)",
+                ref_map_center = [
+                    float(top_inf["Latitude"].mean()),
+                    float(top_inf["Longitude"].mean()),
+                ]
+                ref_m = folium.Map(
+                    location=ref_map_center,
+                    zoom_start=10,
+                    tiles="CartoDB dark_matter",
                 )
+                folium.TileLayer(
+                    tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+                    attr="Google", name="🛰️ Satellite", overlay=False,
+                ).add_to(ref_m)
+                folium.TileLayer("CartoDB dark_matter", name="🌃 Dark", overlay=False).add_to(ref_m)
 
-                # Overlay conflict sites as fixed grey markers
-                if not conflict_pts.empty:
-                    fig_map.add_scattermapbox(
-                        lat=conflict_pts["Latitude"],
-                        lon=conflict_pts["Longitude"],
-                        mode="markers",
-                        marker=dict(size=8, color="#FF3131", opacity=0.7),
-                        name="Conflict sites",
-                        hovertext=conflict_pts["Severity Score"].apply(
-                            lambda s: f"Conflict severity: {s:.1f}"
-                        ),
-                        hoverinfo="text",
-                    )
+                refuge_zone_grp   = folium.FeatureGroup(name="🟡 Inferred Refuges", show=True).add_to(ref_m)
+                conflict_site_grp = folium.FeatureGroup(name="🔴 Conflict Sites",   show=True).add_to(ref_m)
 
-                fig_map.update_layout(
-                    margin=dict(l=0, r=0, t=40, b=0),
-                    height=500,
-                    legend=dict(
-                        bgcolor="rgba(20,20,20,0.7)",
-                        font=dict(color="white"),
-                    ),
-                )
-                st.plotly_chart(fig_map, use_container_width=True)
+                # Normalise score to [0,1] for colour intensity
+                max_score = top_inf["Combined Score"].max()
+
+                def _score_to_color(score, max_s):
+                    """Map normalised score to yellow→red hex."""
+                    t = score / max(max_s, 1e-9)
+                    r = int(255)
+                    g = int(200 * (1 - t))
+                    b = 0
+                    return f"#{r:02x}{g:02x}{b:02x}"
+
+                for _, zone in top_inf.iterrows():
+                    color = _score_to_color(zone["Combined Score"], max_score)
+                    obs   = zone["Observation Boost"]
+                    obs_tag = f"✅ {obs:.0f} logged observations" if obs > 0 else "⚠️ No logged observations (unsurveyed)"
+                    popup_html = f"""
+                    <div style='font-family:sans-serif;font-size:13px;min-width:200px'>
+                    <b>Nearest Beat:</b> {zone['Nearest Beat']}<br>
+                    <b>Distance to beat:</b> {zone['Nearest Beat Distance (km)']:.1f} km<br>
+                    <hr style='margin:4px 0'>
+                    <b>Combined Score:</b> {zone['Combined Score']:.3f}<br>
+                    <b>Conflict Attraction:</b> {zone['Conflict Attraction Score']:.2f}<br>
+                    <b>{obs_tag}</b><br>
+                    <hr style='margin:4px 0'>
+                    <b>Nearby conflicts:</b> {zone['Nearby Conflict Count']:.0f}<br>
+                    <b>Nearby severity:</b> {zone['Nearby Conflict Severity']:.1f}
+                    </div>"""
+                    radius = 6 + zone["Nearby Conflict Severity"] / 5
+                    folium.CircleMarker(
+                        location=[zone["Latitude"], zone["Longitude"]],
+                        radius=min(radius, 20),
+                        color=color,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.6 + 0.35 * (zone["Combined Score"] / max(max_score, 1e-9)),
+                        popup=folium.Popup(popup_html, max_width=260),
+                        tooltip=f"Score: {zone['Combined Score']:.3f} | Beat: {zone['Nearest Beat']}",
+                    ).add_to(refuge_zone_grp)
+
+                # Conflict sites as red markers
+                for _, cp in conflict_pts.iterrows():
+                    popup_html = f"""
+                    <div style='font-family:sans-serif;font-size:13px'>
+                    <b>Conflict site</b><br>
+                    Beat: {cp.get('Beat','?')}<br>
+                    Crop: {int(cp['Crop Damage'])} | House: {int(cp['House Damage'])} | Injury: {int(cp['Injury'])}<br>
+                    Severity: {cp['Severity Score']:.1f}
+                    </div>"""
+                    folium.CircleMarker(
+                        location=[cp["Latitude"], cp["Longitude"]],
+                        radius=7,
+                        color="#E24B4A",
+                        fill=True,
+                        fill_color="#E24B4A",
+                        fill_opacity=0.85,
+                        popup=folium.Popup(popup_html, max_width=220),
+                        tooltip=f"Conflict | Severity: {cp['Severity Score']:.1f} | {cp.get('Beat','')}",
+                    ).add_to(conflict_site_grp)
+
+                folium.LayerControl(position="topright", collapsed=False).add_to(ref_m)
+                st_folium(ref_m, width=None, height=550, use_container_width=True)
 
                 # ── Score breakdown chart ─────────────────────
-                st.markdown("**Score breakdown** — attraction vs observational evidence")
+                st.markdown("**Score breakdown** — each dot is one candidate zone")
                 fig_scores = px.scatter(
                     top_inf,
                     x="Conflict Attraction Score",
@@ -990,36 +1143,288 @@ if uploaded_csv is not None:
                     size="Nearby Conflict Count",
                     hover_name="Nearest Beat",
                     color_continuous_scale="YlOrRd",
-                    title="Attraction vs Observation (bubble size = nearby conflict count)",
+                    title="Conflict Attraction vs Ranger Observations  (bubble = nearby conflict count)",
                     labels={
-                        "Conflict Attraction Score": "Conflict Attraction Score (spatial)",
-                        "Observation Boost":         "Observation Boost (logged entries)",
+                        "Conflict Attraction Score": "← Spatial attraction from conflicts →",
+                        "Observation Boost":         "← Direct observation evidence →",
                     },
+                )
+                fig_scores.add_annotation(
+                    x=top_inf["Conflict Attraction Score"].max() * 0.7,
+                    y=top_inf["Observation Boost"].max() * 0.05,
+                    text="High attraction, unsurveyed<br>→ Priority patrol zones",
+                    showarrow=False,
+                    font=dict(size=11, color="#EF9F27"),
+                    align="center",
                 )
                 st.plotly_chart(fig_scores, use_container_width=True)
 
                 # ── Detail table ──────────────────────────────
-                st.markdown("**Candidate zone details**")
-                display_cols = [
-                    "Nearest Beat", "Nearest Beat Distance (km)",
-                    "Conflict Attraction Score", "Observation Boost", "Combined Score",
-                    "Nearby Conflict Count", "Nearby Conflict Severity",
-                    "Latitude", "Longitude",
-                ]
-                st.dataframe(
-                    top_inf[display_cols]
-                    .style.background_gradient(subset=["Combined Score"], cmap="YlOrRd"),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                with st.expander("📋 Full candidate zone table"):
+                    display_cols = [
+                        "Nearest Beat", "Nearest Beat Distance (km)",
+                        "Combined Score", "Conflict Attraction Score",
+                        "Observation Boost",
+                        "Nearby Conflict Count", "Nearby Conflict Severity",
+                        "Latitude", "Longitude",
+                    ]
+                    st.dataframe(
+                        top_inf[display_cols]
+                        .style.background_gradient(subset=["Combined Score"], cmap="YlOrRd"),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
                 st.info(
-                    "💡 **Operational Insight:** High-scoring zones that have **low Observation Boost** "
-                    "are areas the model believes are used as refuges but rangers have *not yet surveyed*. "
-                    "These are the highest-priority locations for new morning patrol routes."
+                    "💡 **Priority patrol zones:** Look for dots in the bottom-right of the scatter chart — "
+                    "high conflict attraction but zero observation boost. "
+                    "These are areas the model flags as likely refuges that rangers have **never surveyed**."
                 )
 
-    # ── TAB 4: DATA & REPORTS ─────────────────────────────────
+    # ── TAB 4: HERD CLASSIFICATION ────────────────────────────
+    with tab_herds:
+        st.subheader("🐘 Herd Classification")
+        st.markdown(
+            "Groups individual sighting records into discrete herd events using "
+            "spatiotemporal chain-linking, then classifies each herd by **composition**, "
+            "**movement pattern**, **temporal activity**, and **conflict risk**."
+        )
+
+        with st.expander("⚙️ Classification parameters", expanded=False):
+            hc1, hc2, hc3 = st.columns(3)
+            h_spatial = hc1.slider(
+                "Spatial gap (km)", 0.5, 10.0,
+                config.HERD_SPATIAL_GAP_KM, 0.5,
+                key="h_spatial",
+                help="Max distance between consecutive records to stay in the same herd.",
+            )
+            h_temporal = hc2.slider(
+                "Temporal gap (hrs)", 1, 48,
+                config.HERD_TEMPORAL_GAP_HOURS, 1,
+                key="h_temporal",
+                help="Max hours between consecutive records to stay in the same herd.",
+            )
+            h_min_size = hc3.slider(
+                "Min herd size", 1, 10,
+                config.HERD_MIN_SIZE, 1,
+                key="h_min_size",
+                help="Minimum Total Count to include a record.",
+            )
+
+        herd_hash = f"{_hash}_{h_spatial}_{h_temporal}_{h_min_size}"
+        with st.spinner("Classifying herds…"):
+            df_with_hids, herds_df = cached_classify_herds(
+                herd_hash, df, h_spatial, h_temporal, h_min_size
+            )
+
+        if herds_df.empty:
+            st.warning("No herds could be classified with current parameters and filters.")
+        else:
+            # ── Summary metrics ───────────────────────────────
+            n_herds     = len(herds_df)
+            n_critical  = int((herds_df["Conflict Risk"] == "Critical").sum())
+            n_high      = int((herds_df["Conflict Risk"] == "High").sum())
+            n_raiding   = int((herds_df["Movement"] == "Raiding").sum())
+            avg_size    = herds_df["Total Count (max)"].mean()
+
+            sm1, sm2, sm3, sm4, sm5 = st.columns(5)
+            sm1.metric("Total Herds",       n_herds)
+            sm2.metric("Critical Risk",     n_critical)
+            sm3.metric("High Risk",         n_high)
+            sm4.metric("Raiding Herds",     n_raiding)
+            sm5.metric("Avg Herd Size",     f"{avg_size:.1f}")
+
+            st.divider()
+
+            # ── Row 1: Classification breakdown charts ────────
+            rc1, rc2, rc3, rc4 = st.columns(4)
+
+            with rc1:
+                comp_counts = herds_df["Composition"].value_counts().reset_index()
+                comp_counts.columns = ["Composition", "Count"]
+                fig_comp = px.pie(
+                    comp_counts, values="Count", names="Composition",
+                    title="Herd Composition",
+                    color="Composition",
+                    color_discrete_map=config.HERD_COMPOSITION_COLORS,
+                    hole=0.4,
+                )
+                fig_comp.update_layout(showlegend=True, height=280, margin=dict(t=40,b=0,l=0,r=0))
+                st.plotly_chart(fig_comp, use_container_width=True)
+
+            with rc2:
+                mov_counts = herds_df["Movement"].value_counts().reset_index()
+                mov_counts.columns = ["Movement", "Count"]
+                fig_mov = px.bar(
+                    mov_counts, x="Movement", y="Count",
+                    title="Movement Patterns",
+                    color="Movement",
+                    color_discrete_map={
+                        "Raiding":    "#E24B4A",
+                        "Transiting": "#EF9F27",
+                        "Ranging":    "#378ADD",
+                        "Stationary": "#639922",
+                    },
+                )
+                fig_mov.update_layout(showlegend=False, height=280, margin=dict(t=40,b=0,l=0,r=0))
+                st.plotly_chart(fig_mov, use_container_width=True)
+
+            with rc3:
+                temp_counts = herds_df["Temporal Pattern"].value_counts().reset_index()
+                temp_counts.columns = ["Temporal", "Count"]
+                fig_temp = px.bar(
+                    temp_counts, x="Temporal", y="Count",
+                    title="Temporal Activity",
+                    color="Temporal",
+                    color_discrete_map={
+                        "Nocturnal":   "#9B59B6",
+                        "Diurnal":     "#F1C40F",
+                        "Crepuscular": "#E67E22",
+                        "Mixed":       "#95A5A6",
+                        "Unknown":     "#7f7f7f",
+                    },
+                )
+                fig_temp.update_layout(showlegend=False, height=280, margin=dict(t=40,b=0,l=0,r=0))
+                st.plotly_chart(fig_temp, use_container_width=True)
+
+            with rc4:
+                risk_counts = herds_df["Conflict Risk"].value_counts().reindex(
+                    ["Critical", "High", "Moderate", "Low"], fill_value=0
+                ).reset_index()
+                risk_counts.columns = ["Risk", "Count"]
+                fig_risk = px.bar(
+                    risk_counts, x="Risk", y="Count",
+                    title="Conflict Risk",
+                    color="Risk",
+                    color_discrete_map=config.HERD_RISK_COLORS,
+                )
+                fig_risk.update_layout(showlegend=False, height=280, margin=dict(t=40,b=0,l=0,r=0),
+                                        xaxis=dict(categoryorder="array",
+                                                   categoryarray=["Critical","High","Moderate","Low"]))
+                st.plotly_chart(fig_risk, use_container_width=True)
+
+            st.divider()
+
+            # ── Row 2: Map + scatter ──────────────────────────
+            map_col, scatter_col = st.columns([3, 2])
+
+            with map_col:
+                st.markdown("**Herd centroids — coloured by Conflict Risk**")
+                herd_map_center = [
+                    herds_df["Centroid Lat"].mean(),
+                    herds_df["Centroid Lon"].mean(),
+                ]
+                hm = folium.Map(location=herd_map_center, zoom_start=10,
+                                tiles="CartoDB dark_matter")
+                folium.TileLayer(
+                    tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+                    attr="Google", name="🛰️ Satellite", overlay=False,
+                ).add_to(hm)
+                folium.TileLayer("CartoDB dark_matter", name="🌃 Dark", overlay=False).add_to(hm)
+
+                # One feature group per risk level
+                risk_groups = {}
+                for risk_level, color in config.HERD_RISK_COLORS.items():
+                    grp = folium.FeatureGroup(
+                        name=f"● {risk_level}", show=True
+                    ).add_to(hm)
+                    risk_groups[risk_level] = (grp, color)
+
+                for _, h in herds_df.iterrows():
+                    grp, color = risk_groups.get(
+                        h["Conflict Risk"], (hm, "#aaaaaa")
+                    )
+                    popup_html = f"""
+                    <div style='font-family:sans-serif;font-size:13px;min-width:210px'>
+                    <b>Herd {int(h['Herd ID'])}</b><br>
+                    <b>Beat:</b> {h['Beat']}<br>
+                    <b>Composition:</b> {h['Composition']}<br>
+                    <b>Movement:</b> {h['Movement']}<br>
+                    <b>Temporal:</b> {h['Temporal Pattern']}<br>
+                    <b>Risk:</b> {h['Conflict Risk']}<br>
+                    <hr style='margin:4px 0'>
+                    <b>Size:</b> {int(h['Total Count (max)'])} &nbsp;
+                    <b>Records:</b> {int(h['Records'])}<br>
+                    <b>Duration:</b> {h['Duration (hrs)']:.1f} hrs<br>
+                    <b>Displacement:</b> {h['Displacement (km)']:.1f} km<br>
+                    <b>Severity:</b> {h['Severity Score (sum)']:.1f}
+                    </div>"""
+                    radius = 5 + min(int(h["Total Count (max)"]) * 0.8, 15)
+                    folium.CircleMarker(
+                        location=[h["Centroid Lat"], h["Centroid Lon"]],
+                        radius=radius,
+                        color=color,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.75,
+                        popup=folium.Popup(popup_html, max_width=250),
+                        tooltip=(
+                            f"Herd {int(h['Herd ID'])} | "
+                            f"{h['Conflict Risk']} | "
+                            f"{h['Composition']} | "
+                            f"Size: {int(h['Total Count (max)'])}"
+                        ),
+                    ).add_to(grp)
+
+                folium.LayerControl(position="topright", collapsed=False).add_to(hm)
+                st_folium(hm, width=None, height=500, use_container_width=True)
+
+            with scatter_col:
+                st.markdown("**Herd size vs duration — by composition**")
+                fig_scatter = px.scatter(
+                    herds_df,
+                    x="Duration (hrs)",
+                    y="Total Count (max)",
+                    color="Composition",
+                    symbol="Movement",
+                    size="Severity Score (sum)",
+                    size_max=20,
+                    hover_name="Beat",
+                    hover_data={
+                        "Conflict Risk":    True,
+                        "Temporal Pattern": True,
+                        "Displacement (km)": True,
+                        "Records":          True,
+                    },
+                    color_discrete_map=config.HERD_COMPOSITION_COLORS,
+                    title="Size × Duration (symbol = movement, size = severity)",
+                )
+                fig_scatter.update_layout(height=500)
+                st.plotly_chart(fig_scatter, use_container_width=True)
+
+            st.divider()
+
+            # ── Herd table with risk filter ───────────────────
+            st.markdown("**Herd event table**")
+            risk_filter = st.multiselect(
+                "Filter by Conflict Risk",
+                ["Critical", "High", "Moderate", "Low"],
+                default=["Critical", "High"],
+                key="herd_risk_filter",
+            )
+            display_herds = herds_df[herds_df["Conflict Risk"].isin(risk_filter)] \
+                            if risk_filter else herds_df
+
+            table_cols = [
+                "Herd ID", "Beat", "Division", "Range",
+                "Composition", "Movement", "Temporal Pattern", "Conflict Risk",
+                "Total Count (max)", "Duration (hrs)", "Records",
+                "Displacement (km)", "Severity Score (sum)",
+                "Crop Damage", "House Damage", "Injury",
+                "Start Time", "End Time",
+            ]
+            st.dataframe(
+                display_herds[table_cols]
+                .style.applymap(
+                    lambda v: f"color: {config.HERD_RISK_COLORS.get(v, 'inherit')}; font-weight:600",
+                    subset=["Conflict Risk"]
+                )
+                .background_gradient(subset=["Severity Score (sum)"], cmap="Reds"),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # ── TAB 5: DATA & REPORTS ─────────────────────────────────
     with tab_data:
         st.subheader("📋 Data Tables & Reports")
 

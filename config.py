@@ -52,6 +52,24 @@ REFUGE_SPATIAL_GRID_RESOLUTION_KM  = 0.5
 # ── KML/KMZ Parsing ──────────────────────────────────────────
 KML_IGNORED_NAMES = {"BTR", "SATNA", "0", "1", "NONE", "UNKNOWN"}
 
+# ── Herd Classification ──────────────────────────────────────
+HERD_SPATIAL_GAP_KM      = 2.0   # max km between records to stay in same herd
+HERD_TEMPORAL_GAP_HOURS  = 12    # max hours between records to stay in same herd
+HERD_MIN_SIZE            = 1     # minimum Total Count to include a record
+
+HERD_RISK_COLORS = {
+    "Critical": "#E24B4A",
+    "High":     "#EF9F27",
+    "Moderate": "#378ADD",
+    "Low":      "#639922",
+}
+HERD_COMPOSITION_COLORS = {
+    "Bull Group":    "#1f77b4",
+    "Nursery Herd":  "#e377c2",
+    "Mixed Herd":    "#2ca02c",
+    "Unclassified":  "#7f7f7f",
+}
+
 # ── Staff Analytics ───────────────────────────────────────────
 MIN_STAFF_PER_DIVISION = 10   # divisions below this are flagged, not silently excluded
 

@@ -625,13 +625,25 @@ if uploaded_csv is not None:
 
             ref_df = cached_identify_daytime_refuges(_hash, df)
             if not ref_df.empty:
+                # Normalise Persistence Score to a visible pixel radius (6–18 px).
+                # The raw score is an unbounded weighted sum; using it directly
+                # produces circles dozens or hundreds of pixels wide.
+                _p_min = ref_df["Persistence Score"].min()
+                _p_max = ref_df["Persistence Score"].max()
+                _p_range = max(_p_max - _p_min, 1e-6)  # avoid division by zero
                 for _, ref in ref_df.head(10).iterrows():
+                    _norm = (ref["Persistence Score"] - _p_min) / _p_range  # 0–1
+                    _radius = 6 + _norm * 12   # maps to 6–18 px
                     folium.CircleMarker(
                         location=[ref["Latitude"], ref["Longitude"]],
-                        radius=ref["Persistence Score"] * 1.5,
+                        radius=_radius,
                         color="#39FF14", fill=True,
-                        fill_color="#39FF14", fill_opacity=0.3,
-                        tooltip=f"<b>REFUGE: {ref['Beat']}</b>",
+                        fill_color="#39FF14", fill_opacity=0.4,
+                        tooltip=(
+                            f"<b>REFUGE: {ref['Beat']}</b><br>"
+                            f"Persistence Score: {ref['Persistence Score']:.1f}<br>"
+                            f"Sightings: {int(ref['Sighting Frequency'])}"
+                        ),
                     ).add_to(refuge_grp)
 
             # Always show high-severity threats

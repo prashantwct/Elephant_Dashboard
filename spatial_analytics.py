@@ -532,28 +532,55 @@ def classify_herds(df,
         injury      = int(grp["Injury"].sum())
 
         # Demography
+        # Use .max() for total count (best single-observation group size).
+        # Use .max() for demographic sub-counts too: summing across records
+        # inflates figures when the same animals are re-sighted multiple times.
         total_count = int(grp["Total Count"].max())
-        male_c      = int(grp["Male Count"].sum())
-        female_c    = int(grp["Female Count"].sum())
-        calf_c      = int(grp["Calf Count"].sum())
-        unk_c       = int(grp["Unknown Count"].sum()) if "Unknown Count" in grp else 0
+        male_c      = int(grp["Male Count"].max())
+        female_c    = int(grp["Female Count"].max())
+        calf_c      = int(grp["Calf Count"].max())
+        unk_c       = int(grp["Unknown Count"].max()) if "Unknown Count" in grp else 0
 
         # ── Composition classification ────────────────────────
+        # Use the demographic max counts (best single-record snapshot) for
+        # percentages; fall back gracefully when data are sparse.
         classified_total = male_c + female_c + calf_c
         if classified_total > 0:
-            male_pct = male_c / classified_total
-            if male_pct >= 0.70 and total_count <= 5:
+            male_pct   = male_c   / classified_total
+            female_pct = female_c / classified_total
+
+            # 1. Bull Group: ≥70 % male.  No group-size cap — a large all-male
+            #    aggregation is still a bull group.
+            if male_pct >= 0.70 and calf_c == 0:
                 composition = "Bull Group"
-            elif calf_c > 0 and female_c > 0 and (female_c / max(calf_c, 1)) <= 3:
+
+            # 2. Nursery Herd: calves present AND mostly females
+            #    (female:calf ratio ≤ 4 is the field standard).
+            elif calf_c > 0 and female_c > 0 and (female_c / calf_c) <= 4:
                 composition = "Nursery Herd"
-            elif male_c > 0 and female_c > 0 and calf_c > 0:
+
+            # 3. Calves present with males too → Mixed Herd (breeding aggregation)
+            elif calf_c > 0 and male_c > 0:
                 composition = "Mixed Herd"
+
+            # 4. Calves only (sex of adults unrecorded) → treat as Nursery
             elif calf_c > 0:
                 composition = "Nursery Herd"
-            elif male_pct >= 0.70:
-                composition = "Bull Group"
-            else:
+
+            # 5. Female-only group (no males, no calves recorded)
+            elif female_pct >= 0.90 and male_c == 0:
+                composition = "Female Group"
+
+            # 6. Remaining classified records with both sexes but no calves
+            elif male_c > 0 and female_c > 0:
                 composition = "Mixed Herd"
+
+            # 7. Single-sex male with <70 % threshold (edge case)
+            elif male_c > 0:
+                composition = "Bull Group"
+
+            else:
+                composition = "Unclassified"
         else:
             composition = "Unclassified"
 
@@ -585,21 +612,28 @@ def classify_herds(df,
         # ── Temporal classification ───────────────────────────
         valid_hours = grp[grp["Hour"] != -1]["Hour"].values
         if len(valid_hours) > 0:
-            night_mask = (valid_hours >= 18) | (valid_hours <= 6)
-            day_mask   = (valid_hours > 6)  & (valid_hours < 18)
-            crep_mask  = ((valid_hours >= 5) & (valid_hours <= 8)) | \
-                         ((valid_hours >= 17) & (valid_hours <= 20))
+            n = len(valid_hours)
+            # Exclusive windows (no hour belongs to more than one category):
+            #   Crepuscular : 05–07 (dawn) and 17–19 (dusk)
+            #   Nocturnal   : 20–04 (deep night, excluding crepuscular dusk/dawn)
+            #   Diurnal     : 08–16 (mid-day, excluding crepuscular hours)
+            crep_mask  = (
+                ((valid_hours >= 5)  & (valid_hours <= 7)) |
+                ((valid_hours >= 17) & (valid_hours <= 19))
+            )
+            night_mask = (valid_hours >= 20) | (valid_hours <= 4)
+            day_mask   = (valid_hours >= 8)  & (valid_hours <= 16)
 
-            night_pct = night_mask.sum() / len(valid_hours)
-            day_pct   = day_mask.sum()   / len(valid_hours)
-            crep_pct  = crep_mask.sum()  / len(valid_hours)
+            night_pct = night_mask.sum() / n
+            day_pct   = day_mask.sum()   / n
+            crep_pct  = crep_mask.sum()  / n
 
-            if night_pct >= 0.70:
+            if crep_pct >= 0.60:
+                temporal = "Crepuscular"
+            elif night_pct >= 0.70:
                 temporal = "Nocturnal"
             elif day_pct >= 0.70:
                 temporal = "Diurnal"
-            elif crep_pct >= 0.60:
-                temporal = "Crepuscular"
             else:
                 temporal = "Mixed"
         else:

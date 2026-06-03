@@ -177,15 +177,7 @@ def cached_infer_refuges_from_conflict_proximity(sightings_hash, _df, search_rad
 @st.cache_data
 def cached_classify_herds(sightings_hash, _df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size):
     """Cache wrapper for herd classification."""
-    import traceback as _tb
-    try:
-        return classify_herds(_df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size)
-    except Exception as _e:
-        raise RuntimeError(
-            f"classify_herds failed — {type(_e).__name__}: {_e}\n\n"
-            f"df shape={_df.shape}, dtypes=\n{_df.dtypes.to_string()}\n\n"
-            + _tb.format_exc()
-        ) from _e
+    return classify_herds(_df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1245,10 +1237,21 @@ Zones with **high Combined Score but zero Observation Boost** are unsurveyed are
             )
 
         herd_hash = f"{_hash}_{h_spatial}_{h_temporal}_{h_window}_{h_min_size}"
-        with st.spinner("Classifying herds…"):
-            df_with_hids, herds_df = cached_classify_herds(
-                herd_hash, df, h_spatial, h_temporal, h_window, h_min_size
+        try:
+            with st.spinner("Classifying herds…"):
+                df_with_hids, herds_df = cached_classify_herds(
+                    herd_hash, df, h_spatial, h_temporal, h_window, h_min_size
+                )
+        except Exception as _herd_err:
+            import traceback as _tb
+            st.error(
+                f"**Herd classification failed** — `{type(_herd_err).__name__}: {_herd_err}`\n\n"
+                f"**DataFrame shape:** {df.shape}  |  "
+                f"**Date range:** {df['Date'].min()} → {df['Date'].max()}\n\n"
+                f"**Column dtypes:**\n```\n{df.dtypes.to_string()}\n```\n\n"
+                f"**Traceback:**\n```\n{_tb.format_exc()}\n```"
             )
+            st.stop()
 
         if herds_df.empty:
             st.warning("No herds could be classified with current parameters and filters.")

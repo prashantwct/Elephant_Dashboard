@@ -177,7 +177,15 @@ def cached_infer_refuges_from_conflict_proximity(sightings_hash, _df, search_rad
 @st.cache_data
 def cached_classify_herds(sightings_hash, _df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size):
     """Cache wrapper for herd classification."""
-    return classify_herds(_df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size)
+    import traceback as _tb
+    try:
+        return classify_herds(_df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size)
+    except Exception as _e:
+        raise RuntimeError(
+            f"classify_herds failed — {type(_e).__name__}: {_e}\n\n"
+            f"df shape={_df.shape}, dtypes=\n{_df.dtypes.to_string()}\n\n"
+            + _tb.format_exc()
+        ) from _e
 
 
 # ══════════════════════════════════════════════════════════════

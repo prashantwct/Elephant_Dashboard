@@ -407,100 +407,124 @@ def classify_herds(df,
                    min_herd_size=1):
     """
     Groups sighting records into discrete herd events using spatiotemporal
-    clustering, then classifies each herd by behaviour, composition, and
-    conflict risk.
+    graph clustering, then classifies each herd by behaviour, composition,
+    and conflict risk.
 
     Algorithm
     ---------
-    Records are sorted by date+time. Two consecutive records belong to the
-    SAME herd if:
-      - Distance between them ≤ spatial_gap_km, AND
-      - Time gap between them ≤ temporal_gap_hours
+    The original sequential chain-linking (compare record i to i-1 after
+    global time-sort) produced inflated herd counts because interleaved
+    records from *different* beats disrupt the chain even when they belong
+    to the same physical group.
 
-    If either condition breaks, a new herd event starts.
+    The replacement algorithm uses **graph-based connected-component
+    clustering**:
+
+    1. Sort all records by datetime.
+    2. For every pair of records within the temporal window, add an edge
+       if they are also within the spatial window.
+    3. Find connected components — each component is one herd event.
+
+    This correctly merges records from the same herd even when a record
+    from another beat falls between them in the global time-sort order.
+
+    Complexity: O(n²) within each temporal window; acceptable for typical
+    field-data sizes (<10 000 records).  For very large datasets the window
+    automatically limits the candidate pairs.
 
     Each herd event is then classified on four axes:
 
-    1. Composition type
-       - "Bull Group"      : ≥70 % of counted elephants are male, group ≤ 5
-       - "Nursery Herd"    : calves present AND female:calf ratio ≤ 3
-       - "Mixed Herd"      : both sexes + calves present
+    1. Composition type (based on max demographic counts per herd event)
+       - "Bull Group"      : ≥70 % male, no calves
+       - "Female Group"    : ≥90 % female, no males or calves
+       - "Nursery Herd"    : calves present AND female:calf ratio ≤ 4
+       - "Mixed Herd"      : both sexes present (with or without calves)
        - "Unclassified"    : insufficient demographic data
 
     2. Movement pattern (requires ≥2 records in herd)
-       - "Stationary"      : total displacement ≤ spatial_gap_km / 2
-       - "Ranging"         : displacement > spatial_gap_km / 2, no crop/house damage
-       - "Raiding"         : any crop or house damage in the herd event
-       - "Transiting"      : straight-line distance > 3× spatial_gap_km (long move)
+       - "Stationary"      : displacement ≤ spatial_gap_km / 2
+       - "Ranging"         : displacement > spatial_gap_km / 2, no damage
+       - "Raiding"         : any crop or house damage recorded
+       - "Transiting"      : straight-line distance > 3× spatial_gap_km
 
-    3. Temporal pattern
-       - "Nocturnal"       : ≥70 % of records between 18:00–06:00
-       - "Diurnal"         : ≥70 % of records between 06:00–18:00
-       - "Crepuscular"     : majority between 05:00–08:00 or 17:00–20:00
+    3. Temporal pattern (exclusive hour windows, crepuscular checked first)
+       - "Crepuscular"     : ≥60 % in 05–07 or 17–19
+       - "Nocturnal"       : ≥70 % in 20–04
+       - "Diurnal"         : ≥70 % in 08–16
        - "Mixed"           : no dominant period
 
     4. Conflict risk level
-       - "Critical"        : injury recorded, OR severity score > 25
-       - "High"            : crop or house damage, OR severity > 10
-       - "Moderate"        : near village (Near Village == True) OR severity > 5
+       - "Critical"        : injury recorded OR severity score > 25
+       - "High"            : crop/house damage OR severity > 10
+       - "Moderate"        : near village OR severity > 5
        - "Low"             : no damage, no village proximity
 
     Parameters
     ----------
     df                  : cleaned sightings DataFrame from data_validation
-    spatial_gap_km      : max km between consecutive records in same herd
-    temporal_gap_hours  : max hours between consecutive records in same herd
+    spatial_gap_km      : max km between any two records in the same herd
+    temporal_gap_hours  : max hours between any two records in the same herd
     min_herd_size       : minimum Total Count to include a record (filters noise)
 
     Returns
     -------
     tuple (sightings_df_with_herd_id, herds_summary_df)
-
-    sightings_df_with_herd_id: original df with new column 'Herd ID'
-    herds_summary_df: one row per herd with columns —
-        Herd ID, Start Time, End Time, Duration (hrs), Records,
-        Total Count (max), Centroid Lat, Centroid Lon,
-        Division, Range, Beat (mode),
-        Composition, Movement, Temporal Pattern, Conflict Risk,
-        Severity Score (sum), Crop Damage, House Damage, Injury,
-        Male Count, Female Count, Calf Count, Unknown Count,
-        Displacement (km), Beats Visited
     """
     if df.empty:
-        empty = pd.DataFrame()
-        return df.copy(), empty
+        return df.copy(), pd.DataFrame()
 
     # ── 0. Prepare working copy ───────────────────────────────
     work = df.copy().reset_index(drop=True)
-
-    # Build datetime for sorting; handle missing hours
     work["_dt"] = work["Date"] + pd.to_timedelta(
         work["Hour"].clip(lower=0), unit="h"
     )
     work = work.sort_values("_dt").reset_index(drop=True)
-
-    # Filter by minimum herd size
     work = work[work["Total Count"] >= min_herd_size].reset_index(drop=True)
     if work.empty:
         return df.copy(), pd.DataFrame()
 
-    lats = work["Latitude"].values
-    lons = work["Longitude"].values
-    dts  = work["_dt"].values.astype("datetime64[s]").astype(float)  # seconds since epoch
+    n_rec = len(work)
+    lats  = work["Latitude"].values
+    lons  = work["Longitude"].values
+    dts_s = work["_dt"].values.astype("datetime64[s]").astype(float)  # epoch seconds
+    temporal_gap_s = temporal_gap_hours * 3600.0
 
-    # ── 1. Assign Herd IDs via sequential chain-linking ───────
-    herd_ids = np.zeros(len(work), dtype=int)
-    current_herd = 0
+    # ── 1. Build adjacency via Union-Find ─────────────────────
+    # parent[i] = representative of i's component
+    parent = list(range(n_rec))
 
-    for i in range(1, len(work)):
-        dist_km = haversine_np(lons[i-1], lats[i-1], lons[i], lats[i])
-        dt_hrs  = abs(dts[i] - dts[i-1]) / 3600.0
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]  # path compression
+            x = parent[x]
+        return x
 
-        if dist_km <= spatial_gap_km and dt_hrs <= temporal_gap_hours:
-            herd_ids[i] = current_herd
-        else:
-            current_herd += 1
-            herd_ids[i] = current_herd
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    # Iterate over pairs within temporal window.
+    # Because records are time-sorted, we only look forward until the
+    # temporal gap is exceeded — this keeps the inner loop short.
+    for i in range(n_rec):
+        for j in range(i + 1, n_rec):
+            if (dts_s[j] - dts_s[i]) > temporal_gap_s:
+                break  # records are sorted; no later j can qualify
+            dist_km = haversine_np(lons[i], lats[i], lons[j], lats[j])
+            if dist_km <= spatial_gap_km:
+                union(i, j)
+
+    # Assign integer herd IDs from component roots
+    root_to_id = {}
+    herd_id_counter = 0
+    herd_ids = np.zeros(n_rec, dtype=int)
+    for i in range(n_rec):
+        root = find(i)
+        if root not in root_to_id:
+            root_to_id[root] = herd_id_counter
+            herd_id_counter += 1
+        herd_ids[i] = root_to_id[root]
 
     work["Herd ID"] = herd_ids
 
@@ -511,7 +535,6 @@ def classify_herds(df,
         grp = grp.sort_values("_dt")
         n   = len(grp)
 
-        # Basic spatio-temporal stats
         start_dt   = grp["_dt"].min()
         end_dt     = grp["_dt"].max()
         duration_h = (end_dt - start_dt).total_seconds() / 3600
@@ -519,66 +542,44 @@ def classify_herds(df,
         c_lat = grp["Latitude"].mean()
         c_lon = grp["Longitude"].mean()
 
-        # Administrative mode
-        div   = grp["Division"].mode()[0] if "Division" in grp else "Unknown"
-        rng   = grp["Range"].mode()[0]    if "Range"    in grp else "Unknown"
-        beat  = grp["Beat"].mode()[0]     if "Beat"     in grp else "Unknown"
-        beats_visited = ", ".join(sorted(grp["Beat"].dropna().unique())) if "Beat" in grp else ""
+        div   = grp["Division"].mode()[0] if "Division" in grp.columns else "Unknown"
+        rng   = grp["Range"].mode()[0]    if "Range"    in grp.columns else "Unknown"
+        beat  = grp["Beat"].mode()[0]     if "Beat"     in grp.columns else "Unknown"
+        beats_visited = ", ".join(sorted(grp["Beat"].dropna().unique())) if "Beat" in grp.columns else ""
 
-        # Damage / severity
-        sev_sum     = grp["Severity Score"].sum()
-        crop_dmg    = int(grp["Crop Damage"].sum())
-        house_dmg   = int(grp["House Damage"].sum())
-        injury      = int(grp["Injury"].sum())
+        sev_sum   = grp["Severity Score"].sum()
+        crop_dmg  = int(grp["Crop Damage"].sum())
+        house_dmg = int(grp["House Damage"].sum())
+        injury    = int(grp["Injury"].sum())
 
-        # Demography
-        # Use .max() for total count (best single-observation group size).
-        # Use .max() for demographic sub-counts too: summing across records
-        # inflates figures when the same animals are re-sighted multiple times.
+        # Demography — use .max() (best single-observation snapshot).
+        # .sum() inflates counts when the same group is re-sighted.
         total_count = int(grp["Total Count"].max())
         male_c      = int(grp["Male Count"].max())
         female_c    = int(grp["Female Count"].max())
         calf_c      = int(grp["Calf Count"].max())
-        unk_c       = int(grp["Unknown Count"].max()) if "Unknown Count" in grp else 0
+        unk_c       = int(grp["Unknown Count"].max()) if "Unknown Count" in grp.columns else 0
 
         # ── Composition classification ────────────────────────
-        # Use the demographic max counts (best single-record snapshot) for
-        # percentages; fall back gracefully when data are sparse.
         classified_total = male_c + female_c + calf_c
         if classified_total > 0:
             male_pct   = male_c   / classified_total
             female_pct = female_c / classified_total
 
-            # 1. Bull Group: ≥70 % male.  No group-size cap — a large all-male
-            #    aggregation is still a bull group.
             if male_pct >= 0.70 and calf_c == 0:
                 composition = "Bull Group"
-
-            # 2. Nursery Herd: calves present AND mostly females
-            #    (female:calf ratio ≤ 4 is the field standard).
             elif calf_c > 0 and female_c > 0 and (female_c / calf_c) <= 4:
                 composition = "Nursery Herd"
-
-            # 3. Calves present with males too → Mixed Herd (breeding aggregation)
             elif calf_c > 0 and male_c > 0:
                 composition = "Mixed Herd"
-
-            # 4. Calves only (sex of adults unrecorded) → treat as Nursery
             elif calf_c > 0:
                 composition = "Nursery Herd"
-
-            # 5. Female-only group (no males, no calves recorded)
             elif female_pct >= 0.90 and male_c == 0:
                 composition = "Female Group"
-
-            # 6. Remaining classified records with both sexes but no calves
             elif male_c > 0 and female_c > 0:
                 composition = "Mixed Herd"
-
-            # 7. Single-sex male with <70 % threshold (edge case)
             elif male_c > 0:
                 composition = "Bull Group"
-
             else:
                 composition = "Unclassified"
         else:
@@ -588,13 +589,11 @@ def classify_herds(df,
         if n >= 2:
             g_lats = grp["Latitude"].values
             g_lons = grp["Longitude"].values
-            # Total path length
             path_dists = [
-                haversine_np(g_lons[i], g_lats[i], g_lons[i+1], g_lats[i+1])
-                for i in range(len(g_lats)-1)
+                haversine_np(g_lons[k], g_lats[k], g_lons[k+1], g_lats[k+1])
+                for k in range(len(g_lats) - 1)
             ]
             total_path   = sum(path_dists)
-            # Straight-line start→end displacement
             displacement = haversine_np(g_lons[0], g_lats[0], g_lons[-1], g_lats[-1])
         else:
             total_path   = 0.0
@@ -612,11 +611,8 @@ def classify_herds(df,
         # ── Temporal classification ───────────────────────────
         valid_hours = grp[grp["Hour"] != -1]["Hour"].values
         if len(valid_hours) > 0:
-            n = len(valid_hours)
-            # Exclusive windows (no hour belongs to more than one category):
-            #   Crepuscular : 05–07 (dawn) and 17–19 (dusk)
-            #   Nocturnal   : 20–04 (deep night, excluding crepuscular dusk/dawn)
-            #   Diurnal     : 08–16 (mid-day, excluding crepuscular hours)
+            nh = len(valid_hours)
+            # Exclusive, non-overlapping windows
             crep_mask  = (
                 ((valid_hours >= 5)  & (valid_hours <= 7)) |
                 ((valid_hours >= 17) & (valid_hours <= 19))
@@ -624,9 +620,9 @@ def classify_herds(df,
             night_mask = (valid_hours >= 20) | (valid_hours <= 4)
             day_mask   = (valid_hours >= 8)  & (valid_hours <= 16)
 
-            night_pct = night_mask.sum() / n
-            day_pct   = day_mask.sum()   / n
-            crep_pct  = crep_mask.sum()  / n
+            crep_pct  = crep_mask.sum()  / nh
+            night_pct = night_mask.sum() / nh
+            day_pct   = day_mask.sum()   / nh
 
             if crep_pct >= 0.60:
                 temporal = "Crepuscular"
@@ -640,7 +636,7 @@ def classify_herds(df,
             temporal = "Unknown"
 
         # ── Conflict risk classification ──────────────────────
-        near_village = bool(grp.get("Near Village", pd.Series([False])).any()) \
+        near_village = bool(grp["Near Village"].any()) \
                        if "Near Village" in grp.columns else False
 
         if injury > 0 or sev_sum > 25:
@@ -683,15 +679,15 @@ def classify_herds(df,
 
     herds_df = pd.DataFrame(records)
 
-    # Merge Herd ID back to original df (preserving original index order)
+    # Merge Herd ID back to original df
     df_out = df.copy()
-    id_map = work[["_dt", "Herd ID"]].copy()
-    id_map["_dt_orig"] = work["Date"] + pd.to_timedelta(work["Hour"].clip(lower=0), unit="h")
-    df_out["_dt"] = df_out["Date"] + pd.to_timedelta(df_out["Hour"].clip(lower=0), unit="h")
+    df_out["_dt"] = df_out["Date"] + pd.to_timedelta(
+        df_out["Hour"].clip(lower=0), unit="h"
+    )
     df_out = df_out.merge(
         work[["Latitude", "Longitude", "_dt", "Herd ID"]],
         on=["Latitude", "Longitude", "_dt"],
-        how="left"
+        how="left",
     ).drop(columns=["_dt"])
 
     return df_out, herds_df

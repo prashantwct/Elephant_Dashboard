@@ -1198,8 +1198,10 @@ Zones with **high Combined Score but zero Observation Boost** are unsurveyed are
         st.subheader("🐘 Herd Classification")
         st.markdown(
             "Groups individual sighting records into discrete herd events using "
-            "spatiotemporal chain-linking, then classifies each herd by **composition**, "
-            "**movement pattern**, **temporal activity**, and **conflict risk**."
+            "spatiotemporal **graph clustering** (connected components), then classifies each herd by **composition**, "
+            "**movement pattern**, **temporal activity**, and **conflict risk**. "
+            "Records within the spatial and temporal thresholds are linked regardless of "
+            "interleaved entries from other beats, giving more accurate herd counts than sequential chain-linking."
         )
 
         with st.expander("⚙️ Classification parameters", expanded=False):
@@ -1427,7 +1429,7 @@ Zones with **high Combined Score but zero Observation Boost** are unsurveyed are
             ]
             st.dataframe(
                 display_herds[table_cols]
-                .style.applymap(
+                .style.map(
                     lambda v: f"color: {config.HERD_RISK_COLORS.get(v, 'inherit')}; font-weight:600",
                     subset=["Conflict Risk"]
                 )

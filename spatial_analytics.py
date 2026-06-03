@@ -402,58 +402,69 @@ def infer_refuges_from_conflict_proximity(df, search_radius_km=None, grid_res_km
 # ══════════════════════════════════════════════════════════════
 
 
+
 # ══════════════════════════════════════════════════════════════
 # HERD CLASSIFICATION
 # ══════════════════════════════════════════════════════════════
 
 def classify_herds(df,
                    spatial_gap_km=5.0,
-                   temporal_gap_hours=24,
+                   temporal_gap_days=3,
+                   observation_window_days=30,
                    min_herd_size=1):
     """
-    Estimates the number of distinct elephant herds present in the landscape
-    from repeated guard sighting logs.
+    Estimates distinct elephant herds from repeated guard sighting logs,
+    operating on a sliding time window so that seasonal re-use of the same
+    area does not artificially merge unrelated herd visits.
 
     DESIGN RATIONALE
     ----------------
     Guard entries are NOT one-per-herd.  The same physical group may generate
-    many entries:
-      - Multiple guards in adjacent beats log the same group on the same day
-      - A group moving through a beat gets logged on entry and exit
-      - Indirect signs (dung, tracks) are logged hours after the animals left
+    many entries across beats on the same day, and a herd may be logged on
+    and off for weeks as it moves through a landscape.
 
-    The old sequential chain-linking treated each interruption in the sorted
-    timeline as a new herd, producing 1000+ "herds" from a handful of groups.
+    Crucially, herds are ALWAYS MOVING.  A spatial cluster seen in January
+    and a cluster in the same spot in June are completely separate events and
+    must not be merged.  Operating on the full dataset at once — even with a
+    temporal gap threshold — wrongly links them if there happens to be a
+    chain of intermediate sightings in that area over months.
 
-    ALGORITHM — two-pass spatiotemporal union-find
-    -----------------------------------------------
-    Pass 1 — SPATIAL DEDUPLICATION within each day
-      Within each calendar day, any two records whose GPS coordinates are
-      within `spatial_gap_km` of each other are assumed to be the same
-      physical group.  Union-Find merges them into one cluster.
-      Representative point = centroid of the cluster.
+    ALGORITHM — sliding-window two-pass spatiotemporal union-find
+    -------------------------------------------------------------
+    Step 0 — Slice the dataset into overlapping windows of
+             `observation_window_days`.  Each window is independent:
+             herds that persist across a window boundary are re-identified
+             in the next window.  Window stride = observation_window_days / 2
+             (50 % overlap) so no herd event is split by a window edge.
+
+    Within each window:
+
+    Pass 1 — SPATIAL DEDUPLICATION within each calendar day
+      Any two records on the same day within `spatial_gap_km` are merged
+      into one cluster (same physical group).  Centroid = cluster mean.
 
     Pass 2 — TEMPORAL LINKING across days
-      After collapsing each day to a set of cluster centroids, link clusters
-      on consecutive days whose centroids are within `spatial_gap_km`.
-      A herd event spans from first sighting to last sighting of the linked
-      chain.  Gaps > temporal_gap_hours (counting only between successive
-      days when the herd was seen) break the chain — the group has either
-      moved far away or the monitoring gap is too large to infer continuity.
+      Day-cluster centroids are linked forward in time: if centroid A on
+      day D and centroid B on day D+k are within `spatial_gap_km` AND the
+      gap between A's last sighting and B's first sighting is ≤
+      `temporal_gap_days` days, they belong to the same herd presence event.
+      This correctly handles missed-day gaps (guard didn't patrol) without
+      linking visits months apart.
 
-    This produces a realistic herd count (order of magnitude: single digits
-    to low tens) that reflects distinct groups, not logging artefacts.
+    After all windows, duplicate herd events (same records captured in the
+    overlapping portion of two windows) are merged by record-set overlap.
 
     Parameters
     ----------
-    df                  : cleaned sightings DataFrame from data_validation
-    spatial_gap_km      : max km to consider two records the SAME group
-                          (default 5 km — typical daily range patch for
-                          Asian elephants in central Indian forest)
-    temporal_gap_hours  : max hours between last sighting on day N and first
-                          on day N+k before the chain is broken
-                          (default 24 h — one missed day breaks continuity)
-    min_herd_size       : minimum Total Count to include a record
+    df                      : cleaned sightings DataFrame from data_validation
+    spatial_gap_km          : max km between records to be the same group
+                              (default 5 km — typical daily patch size)
+    temporal_gap_days       : max days between consecutive cluster sightings
+                              before a herd chain is broken (default 3 days)
+    observation_window_days : width of each time slice in days (default 30).
+                              Increase for sparse data; decrease for dense
+                              continuous monitoring.
+    min_herd_size           : minimum Total Count to include a record
 
     Returns
     -------
@@ -471,113 +482,159 @@ def classify_herds(df,
     if work.empty:
         return df.copy(), pd.DataFrame()
 
-    work["_date"] = work["_dt"].dt.normalize()   # calendar-day bucket
+    work["_date"] = work["_dt"].dt.normalize()
 
-    lats = work["Latitude"].values
-    lons = work["Longitude"].values
+    # ── Union-Find ────────────────────────────────────────────
+    def make_uf(n):
+        parent = list(range(n))
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+        def union(x, y):
+            rx, ry = find(x), find(y)
+            if rx != ry:
+                parent[rx] = ry
+        return parent, find, union
 
-    # ── Union-Find helpers ────────────────────────────────────
-    parent = list(range(len(work)))
+    # ── Sliding window setup ──────────────────────────────────
+    all_dates  = work["_date"].sort_values().unique()
+    date_min   = pd.Timestamp(all_dates[0])   # ensure pd.Timestamp, not numpy.datetime64
+    date_max   = pd.Timestamp(all_dates[-1])
+    total_days = (date_max - date_min).days + 1
 
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+    stride_days = max(1, observation_window_days // 2)
+    window_td   = pd.Timedelta(days=observation_window_days)
+    stride_td   = pd.Timedelta(days=stride_days)
+    gap_td      = pd.Timedelta(days=temporal_gap_days)
 
-    def union(x, y):
-        rx, ry = find(x), find(y)
-        if rx != ry:
-            parent[rx] = ry
+    # Each element: list of work-df row indices belonging to one herd event
+    all_herd_record_sets = []
 
-    # ── Pass 1: spatial deduplication within each day ────────
-    for _day, day_idx in work.groupby("_date").groups.items():
-        idx = list(day_idx)
-        for a in range(len(idx)):
-            for b in range(a + 1, len(idx)):
-                i, j = idx[a], idx[b]
-                if haversine_np(lons[i], lats[i], lons[j], lats[j]) <= spatial_gap_km:
-                    union(i, j)
+    window_start = date_min
+    while window_start <= date_max:
+        window_end = window_start + window_td
 
-    # Assign day-level cluster IDs
-    root_to_day_cluster = {}
-    counter = 0
-    day_cluster = np.zeros(len(work), dtype=int)
-    for i in range(len(work)):
-        r = find(i)
-        if r not in root_to_day_cluster:
-            root_to_day_cluster[r] = counter
-            counter += 1
-        day_cluster[i] = root_to_day_cluster[r]
+        mask = (work["_date"] >= window_start) & (work["_date"] < window_end)
+        w = work[mask].copy()
+        if w.empty:
+            window_start += stride_td
+            continue
 
-    work["_day_cluster"] = day_cluster
+        w_idx = w.index.tolist()           # positions in work df
+        w     = w.reset_index(drop=False)  # keep 'index' col = work row index
+        w     = w.rename(columns={"index": "_work_idx"})
+        nw    = len(w)
 
-    # Build per-(day, cluster) summary: centroid, time window, best count
-    day_clusters = (
-        work.groupby(["_date", "_day_cluster"])
-        .agg(
-            clat     = ("Latitude",    "mean"),
-            clon     = ("Longitude",   "mean"),
-            first_dt = ("_dt",         "min"),
-            last_dt  = ("_dt",         "max"),
-            max_count= ("Total Count", "max"),
-            orig_idxs= ("_date",       lambda s: list(s.index)),  # work-df indices
+        lats_w = w["Latitude"].values
+        lons_w = w["Longitude"].values
+
+        # Pass 1: spatial dedup within each day
+        parent_w, find_w, union_w = make_uf(nw)
+        for _day, day_rows in w.groupby("_date"):
+            idxs = list(day_rows.index)  # positions within w
+            for a in range(len(idxs)):
+                for b in range(a + 1, len(idxs)):
+                    i, j = idxs[a], idxs[b]
+                    if haversine_np(lons_w[i], lats_w[i], lons_w[j], lats_w[j]) <= spatial_gap_km:
+                        union_w(i, j)
+
+        # Build day-level clusters within this window
+        root_to_dc = {}
+        dc_counter = 0
+        dc_ids = np.zeros(nw, dtype=int)
+        for i in range(nw):
+            r = find_w(i)
+            if r not in root_to_dc:
+                root_to_dc[r] = dc_counter
+                dc_counter += 1
+            dc_ids[i] = root_to_dc[r]
+        w["_dc"] = dc_ids
+
+        day_clusters = (
+            w.groupby(["_date", "_dc"])
+            .agg(
+                clat      = ("Latitude",    "mean"),
+                clon      = ("Longitude",   "mean"),
+                first_dt  = ("_dt",         "min"),
+                last_dt   = ("_dt",         "max"),
+                work_idxs = ("_work_idx",   list),
+            )
+            .reset_index()
+            .sort_values("first_dt")
+            .reset_index(drop=True)
         )
-        .reset_index()
-        .sort_values("first_dt")
-        .reset_index(drop=True)
-    )
 
-    # ── Pass 2: temporal linking across days ─────────────────
-    nc = len(day_clusters)
-    herd_parent = list(range(nc))
+        # Pass 2: temporal linking across days
+        nc = len(day_clusters)
+        parent_dc, find_dc, union_dc = make_uf(nc)
+        clats_dc  = day_clusters["clat"].values
+        clons_dc  = day_clusters["clon"].values
+        # Keep as Python list of pd.Timestamp so arithmetic stays in pandas
+        # (numpy.datetime64 subtraction returns numpy.timedelta64 which raises
+        # TypeError when compared to pd.Timedelta in NumPy 2.x / Python 3.13)
+        last_dts_list  = day_clusters["last_dt"].tolist()
+        first_dts_list = day_clusters["first_dt"].tolist()
 
-    def hfind(x):
-        while herd_parent[x] != x:
-            herd_parent[x] = herd_parent[herd_parent[x]]
-            x = herd_parent[x]
-        return x
+        for i in range(nc):
+            for j in range(i + 1, nc):
+                time_gap = first_dts_list[j] - last_dts_list[i]  # pd.Timedelta
+                if time_gap > gap_td:
+                    break  # sorted by first_dt; no later j qualifies
+                if time_gap < pd.Timedelta(0):
+                    continue  # overlapping same-day clusters; handled in pass 1
+                if haversine_np(clons_dc[i], clats_dc[i], clons_dc[j], clats_dc[j]) <= spatial_gap_km:
+                    union_dc(i, j)
 
-    def hunion(x, y):
-        rx, ry = hfind(x), hfind(y)
-        if rx != ry:
-            herd_parent[rx] = ry
+        # Collect record sets per herd event in this window
+        hroot_to_wids = {}
+        for i, row in day_clusters.iterrows():
+            r = find_dc(i)
+            if r not in hroot_to_wids:
+                hroot_to_wids[r] = []
+            hroot_to_wids[r].extend(row["work_idxs"])
 
-    temporal_gap_s = temporal_gap_hours * 3600.0
-    clats = day_clusters["clat"].values
-    clons = day_clusters["clon"].values
-    last_dts = day_clusters["last_dt"].values.astype("datetime64[s]").astype(float)
-    first_dts = day_clusters["first_dt"].values.astype("datetime64[s]").astype(float)
+        for wids in hroot_to_wids.values():
+            all_herd_record_sets.append(set(wids))
 
-    for i in range(nc):
-        for j in range(i + 1, nc):
-            # Only look forward within the temporal window
-            if (first_dts[j] - last_dts[i]) > temporal_gap_s:
-                break
-            if haversine_np(clons[i], clats[i], clons[j], clats[j]) <= spatial_gap_km:
-                hunion(i, j)
+        window_start += stride_td
 
-    # Assign final herd IDs
-    hroot_to_id = {}
-    hid_counter = 0
-    herd_event_ids = np.zeros(nc, dtype=int)
-    for i in range(nc):
-        r = hfind(i)
-        if r not in hroot_to_id:
-            hroot_to_id[r] = hid_counter
-            hid_counter += 1
-        herd_event_ids[i] = hroot_to_id[r]
+    # ── De-duplicate overlapping window results ───────────────
+    # Two herd events from different windows are the same physical herd if
+    # they share ≥50 % of their records (the overlapping window portion).
+    # Merge them with another union-find pass.
+    if not all_herd_record_sets:
+        return df.copy(), pd.DataFrame()
 
-    day_clusters["Herd ID"] = herd_event_ids
+    nh = len(all_herd_record_sets)
+    parent_h, find_h, union_h = make_uf(nh)
+    for i in range(nh):
+        for j in range(i + 1, nh):
+            si, sj = all_herd_record_sets[i], all_herd_record_sets[j]
+            overlap = len(si & sj)
+            if overlap > 0 and overlap / min(len(si), len(sj)) >= 0.50:
+                union_h(i, j)
 
-    # Map herd ID back to every work row via _day_cluster
-    dc_map = day_clusters.set_index("_day_cluster")["Herd ID"].to_dict()
-    work["Herd ID"] = work["_day_cluster"].map(dc_map)
+    # Assign final herd IDs to every work-df row
+    work["Herd ID"] = pd.NA
+    hroot_to_final = {}
+    final_counter  = 0
+    for i, record_set in enumerate(all_herd_record_sets):
+        r = find_h(i)
+        if r not in hroot_to_final:
+            hroot_to_final[r] = final_counter
+            final_counter += 1
+        hid = hroot_to_final[r]
+        for widx in record_set:
+            work.at[widx, "Herd ID"] = hid
 
-    # ── 3. Build per-herd summary ────────────────────────────
-    records = []
+    work["Herd ID"] = work["Herd ID"].fillna(-1).astype(int)
 
-    for hid, grp in work.groupby("Herd ID"):
+    # ── Build per-herd summary ────────────────────────────────
+    records_out = []
+
+    for hid, grp in work[work["Herd ID"] >= 0].groupby("Herd ID"):
         grp = grp.sort_values("_dt")
         n   = len(grp)
 
@@ -598,14 +655,13 @@ def classify_herds(df,
         house_dmg = int(grp["House Damage"].sum())
         injury    = int(grp["Injury"].sum())
 
-        # Best single-observation snapshot for demographics
         total_count = int(grp["Total Count"].max())
         male_c      = int(grp["Male Count"].max())
         female_c    = int(grp["Female Count"].max())
         calf_c      = int(grp["Calf Count"].max())
         unk_c       = int(grp["Unknown Count"].max()) if "Unknown Count" in grp.columns else 0
 
-        # ── Composition ───────────────────────────────────────
+        # Composition
         classified_total = male_c + female_c + calf_c
         if classified_total > 0:
             male_pct   = male_c   / classified_total
@@ -629,7 +685,7 @@ def classify_herds(df,
         else:
             composition = "Unclassified"
 
-        # ── Movement ──────────────────────────────────────────
+        # Movement
         if n >= 2:
             g_lats = grp["Latitude"].values
             g_lons = grp["Longitude"].values
@@ -652,31 +708,28 @@ def classify_herds(df,
         else:
             movement = "Ranging"
 
-        # ── Temporal ──────────────────────────────────────────
+        # Temporal
         valid_hours = grp[grp["Hour"] != -1]["Hour"].values
         if len(valid_hours) > 0:
-            nh = len(valid_hours)
+            nh2 = len(valid_hours)
             crep_mask  = (
                 ((valid_hours >= 5)  & (valid_hours <= 7)) |
                 ((valid_hours >= 17) & (valid_hours <= 19))
             )
             night_mask = (valid_hours >= 20) | (valid_hours <= 4)
             day_mask   = (valid_hours >= 8)  & (valid_hours <= 16)
-            crep_pct  = crep_mask.sum()  / nh
-            night_pct = night_mask.sum() / nh
-            day_pct   = day_mask.sum()   / nh
-            if crep_pct >= 0.60:
+            if crep_mask.sum()  / nh2 >= 0.60:
                 temporal = "Crepuscular"
-            elif night_pct >= 0.70:
+            elif night_mask.sum() / nh2 >= 0.70:
                 temporal = "Nocturnal"
-            elif day_pct >= 0.70:
+            elif day_mask.sum()   / nh2 >= 0.70:
                 temporal = "Diurnal"
             else:
                 temporal = "Mixed"
         else:
             temporal = "Unknown"
 
-        # ── Conflict risk ─────────────────────────────────────
+        # Risk
         near_village = bool(grp["Near Village"].any()) \
                        if "Near Village" in grp.columns else False
         if injury > 0 or sev_sum > 25:
@@ -688,7 +741,7 @@ def classify_herds(df,
         else:
             risk = "Low"
 
-        records.append({
+        records_out.append({
             "Herd ID":              hid,
             "Start Time":           start_dt,
             "End Time":             end_dt,
@@ -717,7 +770,7 @@ def classify_herds(df,
             "Total Path (km)":      round(total_path, 2),
         })
 
-    herds_df = pd.DataFrame(records)
+    herds_df = pd.DataFrame(records_out)
 
     # Merge Herd ID back to original df
     df_out = df.copy()

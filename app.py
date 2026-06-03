@@ -148,34 +148,36 @@ def load_map_data_as_geojson(folder_path="."):
 
 
 @st.cache_data
-def cached_calculate_affected_villages(sightings_hash, sightings_df, villages_df, radius_km):
-    """Cache wrapper for the vectorised village-distance function."""
-    return calculate_affected_villages(sightings_df, villages_df, radius_km)
+def cached_calculate_affected_villages(sightings_hash, _sightings_df, _villages_df, radius_km):
+    """Cache wrapper for the vectorised village-distance function.
+    DataFrames are prefixed with _ so Streamlit skips hashing them;
+    sightings_hash covers cache invalidation for the data content."""
+    return calculate_affected_villages(_sightings_df, _villages_df, radius_km)
 
 
 @st.cache_data
-def cached_identify_risk_villages(sightings_hash, sightings_df, villages_df,
+def cached_identify_risk_villages(sightings_hash, _sightings_df, _villages_df,
                                    damage_rad, presence_rad, cons_days):
     """Cache wrapper for risk-village identification."""
-    return identify_risk_villages(sightings_df, villages_df, damage_rad, presence_rad, cons_days)
+    return identify_risk_villages(_sightings_df, _villages_df, damage_rad, presence_rad, cons_days)
 
 
 @st.cache_data
-def cached_identify_daytime_refuges(sightings_hash, df):
+def cached_identify_daytime_refuges(sightings_hash, _df):
     """Cache wrapper for refuge detection."""
-    return identify_daytime_refuges(df)
+    return identify_daytime_refuges(_df)
 
 
 @st.cache_data
-def cached_infer_refuges_from_conflict_proximity(sightings_hash, df, search_radius_km, grid_res_km):
+def cached_infer_refuges_from_conflict_proximity(sightings_hash, _df, search_radius_km, grid_res_km):
     """Cache wrapper for spatial conflict-proximity refuge inference."""
-    return infer_refuges_from_conflict_proximity(df, search_radius_km, grid_res_km)
+    return infer_refuges_from_conflict_proximity(_df, search_radius_km, grid_res_km)
 
 
 @st.cache_data
-def cached_classify_herds(sightings_hash, df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size):
+def cached_classify_herds(sightings_hash, _df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size):
     """Cache wrapper for herd classification."""
-    return classify_herds(df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size)
+    return classify_herds(_df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size)
 
 
 # ══════════════════════════════════════════════════════════════

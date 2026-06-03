@@ -1197,26 +1197,28 @@ Zones with **high Combined Score but zero Observation Boost** are unsurveyed are
     with tab_herds:
         st.subheader("🐘 Herd Classification")
         st.markdown(
-            "Groups individual sighting records into discrete herd events using "
-            "spatiotemporal **graph clustering** (connected components), then classifies each herd by **composition**, "
-            "**movement pattern**, **temporal activity**, and **conflict risk**. "
-            "Records within the spatial and temporal thresholds are linked regardless of "
-            "interleaved entries from other beats, giving more accurate herd counts than sequential chain-linking."
+            "Estimates **distinct elephant herds** present in the landscape from repeated guard sighting logs. "
+            "Multiple guards logging the same group on the same day are collapsed into one cluster first "
+            "(spatial deduplication), then clusters on consecutive days within range are linked into "
+            "continuous herd-presence events. This gives a realistic herd count — order of magnitude "
+            "single digits to low tens — rather than one 'herd' per log entry."
         )
 
         with st.expander("⚙️ Classification parameters", expanded=False):
             hc1, hc2, hc3 = st.columns(3)
             h_spatial = hc1.slider(
-                "Spatial gap (km)", 0.5, 10.0,
+                "Spatial gap (km)", 1.0, 15.0,
                 config.HERD_SPATIAL_GAP_KM, 0.5,
                 key="h_spatial",
-                help="Max distance between consecutive records to stay in the same herd.",
+                help="Two records within this distance on the same day are treated as the same group. "
+                     "Asian elephants in central Indian forest typically use 3–8 km daily patches.",
             )
             h_temporal = hc2.slider(
-                "Temporal gap (hrs)", 1, 48,
-                config.HERD_TEMPORAL_GAP_HOURS, 1,
+                "Temporal gap (hrs)", 12, 120,
+                config.HERD_TEMPORAL_GAP_HOURS, 12,
                 key="h_temporal",
-                help="Max hours between consecutive records to stay in the same herd.",
+                help="Max hours between the last sighting of a cluster on one day and the first on "
+                     "a later day before the chain is broken (i.e. treated as a different visit).",
             )
             h_min_size = hc3.slider(
                 "Min herd size", 1, 10,

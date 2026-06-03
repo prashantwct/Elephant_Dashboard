@@ -401,70 +401,59 @@ def infer_refuges_from_conflict_proximity(df, search_radius_km=None, grid_res_km
 # HERD CLASSIFICATION
 # ══════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════
+# HERD CLASSIFICATION
+# ══════════════════════════════════════════════════════════════
+
 def classify_herds(df,
-                   spatial_gap_km=2.0,
-                   temporal_gap_hours=12,
+                   spatial_gap_km=5.0,
+                   temporal_gap_hours=24,
                    min_herd_size=1):
     """
-    Groups sighting records into discrete herd events using spatiotemporal
-    graph clustering, then classifies each herd by behaviour, composition,
-    and conflict risk.
+    Estimates the number of distinct elephant herds present in the landscape
+    from repeated guard sighting logs.
 
-    Algorithm
-    ---------
-    The original sequential chain-linking (compare record i to i-1 after
-    global time-sort) produced inflated herd counts because interleaved
-    records from *different* beats disrupt the chain even when they belong
-    to the same physical group.
+    DESIGN RATIONALE
+    ----------------
+    Guard entries are NOT one-per-herd.  The same physical group may generate
+    many entries:
+      - Multiple guards in adjacent beats log the same group on the same day
+      - A group moving through a beat gets logged on entry and exit
+      - Indirect signs (dung, tracks) are logged hours after the animals left
 
-    The replacement algorithm uses **graph-based connected-component
-    clustering**:
+    The old sequential chain-linking treated each interruption in the sorted
+    timeline as a new herd, producing 1000+ "herds" from a handful of groups.
 
-    1. Sort all records by datetime.
-    2. For every pair of records within the temporal window, add an edge
-       if they are also within the spatial window.
-    3. Find connected components — each component is one herd event.
+    ALGORITHM — two-pass spatiotemporal union-find
+    -----------------------------------------------
+    Pass 1 — SPATIAL DEDUPLICATION within each day
+      Within each calendar day, any two records whose GPS coordinates are
+      within `spatial_gap_km` of each other are assumed to be the same
+      physical group.  Union-Find merges them into one cluster.
+      Representative point = centroid of the cluster.
 
-    This correctly merges records from the same herd even when a record
-    from another beat falls between them in the global time-sort order.
+    Pass 2 — TEMPORAL LINKING across days
+      After collapsing each day to a set of cluster centroids, link clusters
+      on consecutive days whose centroids are within `spatial_gap_km`.
+      A herd event spans from first sighting to last sighting of the linked
+      chain.  Gaps > temporal_gap_hours (counting only between successive
+      days when the herd was seen) break the chain — the group has either
+      moved far away or the monitoring gap is too large to infer continuity.
 
-    Complexity: O(n²) within each temporal window; acceptable for typical
-    field-data sizes (<10 000 records).  For very large datasets the window
-    automatically limits the candidate pairs.
-
-    Each herd event is then classified on four axes:
-
-    1. Composition type (based on max demographic counts per herd event)
-       - "Bull Group"      : ≥70 % male, no calves
-       - "Female Group"    : ≥90 % female, no males or calves
-       - "Nursery Herd"    : calves present AND female:calf ratio ≤ 4
-       - "Mixed Herd"      : both sexes present (with or without calves)
-       - "Unclassified"    : insufficient demographic data
-
-    2. Movement pattern (requires ≥2 records in herd)
-       - "Stationary"      : displacement ≤ spatial_gap_km / 2
-       - "Ranging"         : displacement > spatial_gap_km / 2, no damage
-       - "Raiding"         : any crop or house damage recorded
-       - "Transiting"      : straight-line distance > 3× spatial_gap_km
-
-    3. Temporal pattern (exclusive hour windows, crepuscular checked first)
-       - "Crepuscular"     : ≥60 % in 05–07 or 17–19
-       - "Nocturnal"       : ≥70 % in 20–04
-       - "Diurnal"         : ≥70 % in 08–16
-       - "Mixed"           : no dominant period
-
-    4. Conflict risk level
-       - "Critical"        : injury recorded OR severity score > 25
-       - "High"            : crop/house damage OR severity > 10
-       - "Moderate"        : near village OR severity > 5
-       - "Low"             : no damage, no village proximity
+    This produces a realistic herd count (order of magnitude: single digits
+    to low tens) that reflects distinct groups, not logging artefacts.
 
     Parameters
     ----------
     df                  : cleaned sightings DataFrame from data_validation
-    spatial_gap_km      : max km between any two records in the same herd
-    temporal_gap_hours  : max hours between any two records in the same herd
-    min_herd_size       : minimum Total Count to include a record (filters noise)
+    spatial_gap_km      : max km to consider two records the SAME group
+                          (default 5 km — typical daily range patch for
+                          Asian elephants in central Indian forest)
+    temporal_gap_hours  : max hours between last sighting on day N and first
+                          on day N+k before the chain is broken
+                          (default 24 h — one missed day breaks continuity)
+    min_herd_size       : minimum Total Count to include a record
 
     Returns
     -------
@@ -473,29 +462,26 @@ def classify_herds(df,
     if df.empty:
         return df.copy(), pd.DataFrame()
 
-    # ── 0. Prepare working copy ───────────────────────────────
+    # ── 0. Prepare ───────────────────────────────────────────
     work = df.copy().reset_index(drop=True)
     work["_dt"] = work["Date"] + pd.to_timedelta(
         work["Hour"].clip(lower=0), unit="h"
     )
-    work = work.sort_values("_dt").reset_index(drop=True)
     work = work[work["Total Count"] >= min_herd_size].reset_index(drop=True)
     if work.empty:
         return df.copy(), pd.DataFrame()
 
-    n_rec = len(work)
-    lats  = work["Latitude"].values
-    lons  = work["Longitude"].values
-    dts_s = work["_dt"].values.astype("datetime64[s]").astype(float)  # epoch seconds
-    temporal_gap_s = temporal_gap_hours * 3600.0
+    work["_date"] = work["_dt"].dt.normalize()   # calendar-day bucket
 
-    # ── 1. Build adjacency via Union-Find ─────────────────────
-    # parent[i] = representative of i's component
-    parent = list(range(n_rec))
+    lats = work["Latitude"].values
+    lons = work["Longitude"].values
+
+    # ── Union-Find helpers ────────────────────────────────────
+    parent = list(range(len(work)))
 
     def find(x):
         while parent[x] != x:
-            parent[x] = parent[parent[x]]  # path compression
+            parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
@@ -504,31 +490,91 @@ def classify_herds(df,
         if rx != ry:
             parent[rx] = ry
 
-    # Iterate over pairs within temporal window.
-    # Because records are time-sorted, we only look forward until the
-    # temporal gap is exceeded — this keeps the inner loop short.
-    for i in range(n_rec):
-        for j in range(i + 1, n_rec):
-            if (dts_s[j] - dts_s[i]) > temporal_gap_s:
-                break  # records are sorted; no later j can qualify
-            dist_km = haversine_np(lons[i], lats[i], lons[j], lats[j])
-            if dist_km <= spatial_gap_km:
-                union(i, j)
+    # ── Pass 1: spatial deduplication within each day ────────
+    for _day, day_idx in work.groupby("_date").groups.items():
+        idx = list(day_idx)
+        for a in range(len(idx)):
+            for b in range(a + 1, len(idx)):
+                i, j = idx[a], idx[b]
+                if haversine_np(lons[i], lats[i], lons[j], lats[j]) <= spatial_gap_km:
+                    union(i, j)
 
-    # Assign integer herd IDs from component roots
-    root_to_id = {}
-    herd_id_counter = 0
-    herd_ids = np.zeros(n_rec, dtype=int)
-    for i in range(n_rec):
-        root = find(i)
-        if root not in root_to_id:
-            root_to_id[root] = herd_id_counter
-            herd_id_counter += 1
-        herd_ids[i] = root_to_id[root]
+    # Assign day-level cluster IDs
+    root_to_day_cluster = {}
+    counter = 0
+    day_cluster = np.zeros(len(work), dtype=int)
+    for i in range(len(work)):
+        r = find(i)
+        if r not in root_to_day_cluster:
+            root_to_day_cluster[r] = counter
+            counter += 1
+        day_cluster[i] = root_to_day_cluster[r]
 
-    work["Herd ID"] = herd_ids
+    work["_day_cluster"] = day_cluster
 
-    # ── 2. Build per-herd summary ─────────────────────────────
+    # Build per-(day, cluster) summary: centroid, time window, best count
+    day_clusters = (
+        work.groupby(["_date", "_day_cluster"])
+        .agg(
+            clat     = ("Latitude",    "mean"),
+            clon     = ("Longitude",   "mean"),
+            first_dt = ("_dt",         "min"),
+            last_dt  = ("_dt",         "max"),
+            max_count= ("Total Count", "max"),
+            orig_idxs= ("_date",       lambda s: list(s.index)),  # work-df indices
+        )
+        .reset_index()
+        .sort_values("first_dt")
+        .reset_index(drop=True)
+    )
+
+    # ── Pass 2: temporal linking across days ─────────────────
+    nc = len(day_clusters)
+    herd_parent = list(range(nc))
+
+    def hfind(x):
+        while herd_parent[x] != x:
+            herd_parent[x] = herd_parent[herd_parent[x]]
+            x = herd_parent[x]
+        return x
+
+    def hunion(x, y):
+        rx, ry = hfind(x), hfind(y)
+        if rx != ry:
+            herd_parent[rx] = ry
+
+    temporal_gap_s = temporal_gap_hours * 3600.0
+    clats = day_clusters["clat"].values
+    clons = day_clusters["clon"].values
+    last_dts = day_clusters["last_dt"].values.astype("datetime64[s]").astype(float)
+    first_dts = day_clusters["first_dt"].values.astype("datetime64[s]").astype(float)
+
+    for i in range(nc):
+        for j in range(i + 1, nc):
+            # Only look forward within the temporal window
+            if (first_dts[j] - last_dts[i]) > temporal_gap_s:
+                break
+            if haversine_np(clons[i], clats[i], clons[j], clats[j]) <= spatial_gap_km:
+                hunion(i, j)
+
+    # Assign final herd IDs
+    hroot_to_id = {}
+    hid_counter = 0
+    herd_event_ids = np.zeros(nc, dtype=int)
+    for i in range(nc):
+        r = hfind(i)
+        if r not in hroot_to_id:
+            hroot_to_id[r] = hid_counter
+            hid_counter += 1
+        herd_event_ids[i] = hroot_to_id[r]
+
+    day_clusters["Herd ID"] = herd_event_ids
+
+    # Map herd ID back to every work row via _day_cluster
+    dc_map = day_clusters.set_index("_day_cluster")["Herd ID"].to_dict()
+    work["Herd ID"] = work["_day_cluster"].map(dc_map)
+
+    # ── 3. Build per-herd summary ────────────────────────────
     records = []
 
     for hid, grp in work.groupby("Herd ID"):
@@ -552,20 +598,18 @@ def classify_herds(df,
         house_dmg = int(grp["House Damage"].sum())
         injury    = int(grp["Injury"].sum())
 
-        # Demography — use .max() (best single-observation snapshot).
-        # .sum() inflates counts when the same group is re-sighted.
+        # Best single-observation snapshot for demographics
         total_count = int(grp["Total Count"].max())
         male_c      = int(grp["Male Count"].max())
         female_c    = int(grp["Female Count"].max())
         calf_c      = int(grp["Calf Count"].max())
         unk_c       = int(grp["Unknown Count"].max()) if "Unknown Count" in grp.columns else 0
 
-        # ── Composition classification ────────────────────────
+        # ── Composition ───────────────────────────────────────
         classified_total = male_c + female_c + calf_c
         if classified_total > 0:
             male_pct   = male_c   / classified_total
             female_pct = female_c / classified_total
-
             if male_pct >= 0.70 and calf_c == 0:
                 composition = "Bull Group"
             elif calf_c > 0 and female_c > 0 and (female_c / calf_c) <= 4:
@@ -585,7 +629,7 @@ def classify_herds(df,
         else:
             composition = "Unclassified"
 
-        # ── Movement classification ───────────────────────────
+        # ── Movement ──────────────────────────────────────────
         if n >= 2:
             g_lats = grp["Latitude"].values
             g_lons = grp["Longitude"].values
@@ -608,22 +652,19 @@ def classify_herds(df,
         else:
             movement = "Ranging"
 
-        # ── Temporal classification ───────────────────────────
+        # ── Temporal ──────────────────────────────────────────
         valid_hours = grp[grp["Hour"] != -1]["Hour"].values
         if len(valid_hours) > 0:
             nh = len(valid_hours)
-            # Exclusive, non-overlapping windows
             crep_mask  = (
                 ((valid_hours >= 5)  & (valid_hours <= 7)) |
                 ((valid_hours >= 17) & (valid_hours <= 19))
             )
             night_mask = (valid_hours >= 20) | (valid_hours <= 4)
             day_mask   = (valid_hours >= 8)  & (valid_hours <= 16)
-
             crep_pct  = crep_mask.sum()  / nh
             night_pct = night_mask.sum() / nh
             day_pct   = day_mask.sum()   / nh
-
             if crep_pct >= 0.60:
                 temporal = "Crepuscular"
             elif night_pct >= 0.70:
@@ -635,10 +676,9 @@ def classify_herds(df,
         else:
             temporal = "Unknown"
 
-        # ── Conflict risk classification ──────────────────────
+        # ── Conflict risk ─────────────────────────────────────
         near_village = bool(grp["Near Village"].any()) \
                        if "Near Village" in grp.columns else False
-
         if injury > 0 or sev_sum > 25:
             risk = "Critical"
         elif crop_dmg > 0 or house_dmg > 0 or sev_sum > 10:

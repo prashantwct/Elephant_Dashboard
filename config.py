@@ -53,8 +53,8 @@ REFUGE_SPATIAL_GRID_RESOLUTION_KM  = 0.5
 KML_IGNORED_NAMES = {"BTR", "SATNA", "0", "1", "NONE", "UNKNOWN"}
 
 # ── Herd Classification ──────────────────────────────────────
-HERD_SPATIAL_GAP_KM      = 2.0   # max km between records to stay in same herd
-HERD_TEMPORAL_GAP_HOURS  = 12    # max hours between records to stay in same herd
+HERD_SPATIAL_GAP_KM      = 5.0   # max km to consider two records the same group
+HERD_TEMPORAL_GAP_HOURS  = 24    # max hours gap before a herd chain is broken
 HERD_MIN_SIZE            = 1     # minimum Total Count to include a record
 
 HERD_RISK_COLORS = {

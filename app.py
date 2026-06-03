@@ -173,9 +173,9 @@ def cached_infer_refuges_from_conflict_proximity(sightings_hash, df, search_radi
 
 
 @st.cache_data
-def cached_classify_herds(sightings_hash, df, spatial_gap_km, temporal_gap_hours, min_size):
+def cached_classify_herds(sightings_hash, df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size):
     """Cache wrapper for herd classification."""
-    return classify_herds(df, spatial_gap_km, temporal_gap_hours, min_size)
+    return classify_herds(df, spatial_gap_km, temporal_gap_days, observation_window_days, min_size)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1205,32 +1205,39 @@ Zones with **high Combined Score but zero Observation Boost** are unsurveyed are
         )
 
         with st.expander("⚙️ Classification parameters", expanded=False):
-            hc1, hc2, hc3 = st.columns(3)
+            hc1, hc2, hc3, hc4 = st.columns(4)
             h_spatial = hc1.slider(
                 "Spatial gap (km)", 1.0, 15.0,
                 config.HERD_SPATIAL_GAP_KM, 0.5,
                 key="h_spatial",
-                help="Two records within this distance on the same day are treated as the same group. "
-                     "Asian elephants in central Indian forest typically use 3–8 km daily patches.",
+                help="Two records within this distance are treated as the same group. "
+                     "Asian elephants in central India typically use 3–8 km daily patches.",
             )
             h_temporal = hc2.slider(
-                "Temporal gap (hrs)", 12, 120,
-                config.HERD_TEMPORAL_GAP_HOURS, 12,
+                "Max gap between sightings (days)", 1, 14,
+                config.HERD_TEMPORAL_GAP_DAYS, 1,
                 key="h_temporal",
-                help="Max hours between the last sighting of a cluster on one day and the first on "
-                     "a later day before the chain is broken (i.e. treated as a different visit).",
+                help="If a group isn't seen for more than this many days (e.g. guard missed patrol), "
+                     "the herd chain is broken and treated as a new visit.",
             )
-            h_min_size = hc3.slider(
+            h_window = hc3.slider(
+                "Observation window (days)", 7, 90,
+                config.HERD_OBSERVATION_WINDOW_DAYS, 7,
+                key="h_window",
+                help="Time slice width. Sightings outside this window are never linked — "
+                     "prevents seasonal re-visits to the same area being merged into one herd.",
+            )
+            h_min_size = hc4.slider(
                 "Min herd size", 1, 10,
                 config.HERD_MIN_SIZE, 1,
                 key="h_min_size",
                 help="Minimum Total Count to include a record.",
             )
 
-        herd_hash = f"{_hash}_{h_spatial}_{h_temporal}_{h_min_size}"
+        herd_hash = f"{_hash}_{h_spatial}_{h_temporal}_{h_window}_{h_min_size}"
         with st.spinner("Classifying herds…"):
             df_with_hids, herds_df = cached_classify_herds(
-                herd_hash, df, h_spatial, h_temporal, h_min_size
+                herd_hash, df, h_spatial, h_temporal, h_window, h_min_size
             )
 
         if herds_df.empty:
